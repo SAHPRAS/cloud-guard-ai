@@ -1,0 +1,39 @@
+services:
+  backend:
+    build: ./backend
+    container_name: cgai-backend
+    restart: unless-stopped
+    environment:
+      - AWS_REGION=${AWS_REGION:-eu-central-1}
+      - PROFILE_LABEL=${PROFILE_LABEL:-DT_DTRD_DEV}
+      - BEDROCK_MODEL_SONNET=${BEDROCK_MODEL_SONNET:-anthropic.claude-sonnet-4-6}
+      - BEDROCK_MODEL_HAIKU=${BEDROCK_MODEL_HAIKU:-anthropic.claude-haiku-4-5}
+      - PORT=3001
+    # No AWS keys here — the EC2 instance role provides credentials via IMDS.
+    expose:
+      - "3001"
+    networks:
+      - cgai
+
+  frontend:
+    build: ./frontend
+    container_name: cgai-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+    networks:
+      - cgai
+
+  # Optional: uncomment to add the Cost Explorer cache later
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: cgai-redis
+  #   restart: unless-stopped
+  #   networks:
+  #     - cgai
+
+networks:
+  cgai:
+    driver: bridge

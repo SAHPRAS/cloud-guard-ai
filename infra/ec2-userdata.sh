@@ -18,7 +18,7 @@ chmod +x $DOCKER_CONFIG/cli-plugins/docker-compose
 # --- get the app ---
 cd /home/ec2-user
 # Public repo:
-git clone https://github.com/<you>/cloud-guard-ai.git
+git clone https://github.com/SAHPRAS/cloud-guard-ai.git
 # Private repo (inject a token, ideally from SSM Parameter Store, not hardcoded):
 #   GH_PAT=$(aws ssm get-parameter --name /cloudguard/gh_pat --with-decryption --query Parameter.Value --output text)
 #   git clone https://<user>:${GH_PAT}@github.com/<you>/cloud-guard-ai.git

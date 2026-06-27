@@ -8,7 +8,7 @@ Pick any month — historical months show **actual cost per service + total**; f
 EC2 (t3.large, eu-central-1)
 └── docker compose
     ├── frontend  (React + nginx)   :80   → proxies /api to backend
-    └── backend   (Node, 6 agents)  :3001 → Bedrock + Cost Explorer + Security Hub
+    └── backend   (Python, 6 agents) :3001 → Bedrock + Cost Explorer + Security Hub
          ↑ EC2 instance role (no keys, auto-refreshed via IMDS)
 ```
 
@@ -173,12 +173,12 @@ cloud-guard-ai/
 ├── .gitignore
 ├── backend/
 │   ├── Dockerfile
-│   ├── package.json
+│   ├── requirements.txt
 │   └── src/
-│       ├── index.js                  # /api/identity /api/scan /api/query
-│       ├── bedrock/bedrockClient.js  # invokeClaude + tool-use loop
-│       ├── agents/                   # orchestrator + 5 specialists
-│       └── tools/                    # costExplorer (per-service + forecast), security, sts
+│       ├── main.py                       # /api/identity /api/scan /api/query (FastAPI)
+│       ├── bedrock/bedrock_client.py     # invoke_claude + tool-use loop
+│       ├── agents/                       # orchestrator + 5 specialists
+│       └── tools/                        # cost_explorer (per-service + forecast), security, sts
 ├── frontend/
 │   ├── Dockerfile
 │   ├── nginx.conf
@@ -194,7 +194,8 @@ cloud-guard-ai/
 ## Local development (no EC2)
 ```bash
 # backend (needs AWS creds — your SSO profile works)
-cd backend && npm install && export AWS_PROFILE=DT_DTRD_DEV && npm run dev
+cd backend && pip install -r requirements.txt && export AWS_PROFILE=DT_DTRD_DEV
+uvicorn src.main:app --reload --port 3001
 # frontend (proxies /api to :3001)
 cd frontend && npm install && npm run dev   # http://localhost:5173
 ```

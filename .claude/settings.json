@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/c/cgvenv/Scripts/python -c ' *)"
+    ]
+  }
+}

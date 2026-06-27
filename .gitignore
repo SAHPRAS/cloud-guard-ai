@@ -1,11 +1,15 @@
 # dependencies
 node_modules/
 **/node_modules/
+__pycache__/
+**/__pycache__/
+*.pyc
 
 # build output
 frontend/dist/
 
 # env & secrets — never commit these
+.env
 *.pem
 trust.json
 

@@ -6,7 +6,6 @@ node_modules/
 frontend/dist/
 
 # env & secrets — never commit these
-.env
 *.pem
 trust.json
 

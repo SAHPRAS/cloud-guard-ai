@@ -62,27 +62,46 @@ async def run_athena_query(sql):
     return await asyncio.to_thread(_run_query_sync, sql)
 
 
+def _billing_period_value(month):
+    """'JUN 26' / '2026-06' -> '2026-06' — matches the S3 billing_period=YYYY-MM partition."""
+    return month_to_range(month)["Start"][:7]
+
+
 async def get_cur_cost_by_service(*, month):
     """
-    Per-service cost for a month, summed from line_item_net_unblended_cost
-    (nets out credits/discounts). Note: this account's table has no
-    region/RI/Savings-Plan columns, so this is account-wide and assumes no
-    RI/Savings Plan commitments — if those exist, this won't include
-    amortization and may not match NetAmortizedCost-based totals.
+    Per-service cost straight from the CUR for one billing period: usage_cost
+    (gross/on-demand, line_item_unblended_cost), actual_cost (net of
+    credits/discounts, line_item_net_unblended_cost), and discount (the
+    difference) — plus a TOTAL row and the overall total_cost. Filtered on
+    the billing_period Hive partition (e.g. billing_period=2026-06).
     """
-    period = month_to_range(month)
+    billing_period = _billing_period_value(month)
     sql = f"""
         SELECT
             line_item_product_code AS service,
-            SUM(line_item_net_unblended_cost) AS amount
+            SUM(line_item_unblended_cost) AS usage_cost,
+            SUM(line_item_net_unblended_cost) AS actual_cost
         FROM {DATABASE}.{TABLE}
-        WHERE CAST(bill_billing_period_start_date AS date) >= DATE '{period["Start"]}'
-          AND CAST(bill_billing_period_start_date AS date) < DATE '{period["End"]}'
+        WHERE billing_period = '{billing_period}'
         GROUP BY line_item_product_code
-        HAVING SUM(line_item_net_unblended_cost) > 0
-        ORDER BY amount DESC
+        ORDER BY usage_cost DESC
     """
     rows = await run_athena_query(sql)
-    services = [{"service": r["service"], "amount": round(float(r["amount"]), 2)} for r in rows]
-    total = round(sum(s["amount"] for s in services), 2)
-    return {"period": period, "total": total, "services": services}
+
+    services = []
+    usage_total = 0.0
+    actual_total = 0.0
+    for r in rows:
+        usage = round(float(r["usage_cost"]), 2)
+        actual = round(float(r["actual_cost"]), 2)
+        services.append({"service": r["service"], "usage_cost": usage, "actual_cost": actual, "discount": round(usage - actual, 2)})
+        usage_total += usage
+        actual_total += actual
+
+    services.append({
+        "service": "TOTAL",
+        "usage_cost": round(usage_total, 2),
+        "actual_cost": round(actual_total, 2),
+        "discount": round(usage_total - actual_total, 2),
+    })
+    return {"billingPeriod": billing_period, "totalCost": round(actual_total, 2), "services": services}

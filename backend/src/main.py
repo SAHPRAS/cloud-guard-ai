@@ -61,10 +61,10 @@ async def health():
 @app.get("/api/cur-cost")
 async def cur_cost(month: str = "JUN 26"):
     """
-    Exact per-service cost straight from the CUR via Athena — for verifying
-    it reconciles with the Bills page before we wire it in as the main
-    data source for cost_analyst/anomaly/forecasting.
-    e.g. /api/cur-cost?month=2026-05
+    Exact per-service cost straight from the CUR via Athena, scoped to one
+    billing period — for verifying it reconciles with the Bills page before
+    we wire it in as the main data source for cost_analyst/anomaly/forecasting.
+    e.g. /api/cur-cost?month=2026-06
     """
     try:
         return JSONResponse(await get_cur_cost_by_service(month=month))

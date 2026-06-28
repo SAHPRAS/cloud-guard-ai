@@ -8,7 +8,7 @@ Pick any month — historical months show **actual cost per service + total**; f
 EC2 (t3.large, eu-central-1)
 └── docker compose
     ├── frontend  (React + nginx)   :80   → proxies /api to backend
-    └── backend   (Python, 6 agents) :3001 → Bedrock + Cost Explorer + Security Hub
+    └── backend   (Python, 6 agents) :3001 → Bedrock + Cost Explorer + Athena (CUR) + Security Hub
          ↑ EC2 instance role (no keys, auto-refreshed via IMDS)
 ```
 
@@ -16,10 +16,10 @@ EC2 (t3.large, eu-central-1)
 | Agent | Role | Model |
 |-------|------|-------|
 | Orchestrator | Routes chat queries to the right agent | Claude Haiku (cheap) |
-| Cost Analyst | Per-service spend + total from Cost Explorer | Claude Sonnet |
+| Cost Analyst | Per-service spend + total — CUR (Athena) preferred, Cost Explorer fallback | Claude Sonnet |
 | Anomaly Detector | Flags month-over-month spikes | Claude Sonnet |
 | Rightsizing | Over-provisioned EC2/EKS/DocDB + savings | Claude Sonnet |
-| Forecasting | Per-service forecast + projected total | Claude Sonnet |
+| Forecasting | Per-service forecast + projected total (current/future months only) | Claude Sonnet |
 | Security | SecurityHub + GuardDuty findings | Claude Sonnet |
 
 ---
@@ -146,11 +146,69 @@ cd cloud-guard-ai && git pull && docker compose up -d --build
 
 ---
 
+## CUR via Athena setup (exact bill match)
+
+To get cost numbers that match the Bills page exactly, set up a Cost & Usage Report
+with Athena integration in the Billing console:
+
+1. **Billing console → Data Exports → Create export.** Choose Standard data export,
+   pick Athena as the destination, and an S3 bucket (e.g. `s3://cloud-guard-ai/cloud-guard-cur/`).
+   This auto-creates a Glue database/table and a crawler CloudFormation stack
+   (`crawler-cfn.yml` lands in the bucket).
+2. **Partition by billing period.** The export writes data to
+   `.../data/billing_period=YYYY-MM/...` (Hive-style). The standard AWS Athena
+   integration template uses **partition projection** — `billing_period` is computed
+   on the fly from `TBLPROPERTIES`, not registered via `MSCK REPAIR`/`SHOW PARTITIONS`
+   (those commands will error on a projected table — that's expected, not a bug).
+3. **Same region for everything.** The S3 bucket, Glue database, and the Athena query
+   results location must all be in the same AWS region — Athena rejects a
+   query-results bucket in a different region from where the query runs
+   ("S3 location... is invalid"). Set `ATHENA_REGION` to match.
+4. **IAM permissions** — see `infra/iam-policy.json` (`AthenaQueryExecution`,
+   `GlueCatalogReadOnly`, `CloudGuardAiBucketLevel`/`ObjectLevel`). The
+   `s3:GetBucketLocation` permission on the bucket itself (not `/*`) is easy to miss
+   and causes "Unable to verify/create output bucket".
+5. Verify with a direct query:
+   ```sql
+   SELECT billing_period, SUM(line_item_unblended_cost)
+   FROM cur_db.aws_cur WHERE billing_period = '2026-06' GROUP BY billing_period;
+   ```
+6. Test the app's endpoint directly: `curl localhost/api/cur-cost?month=2026-06`
+   should return `{ billingPeriod, totalCost, services: [{ service, usage_cost,
+   actual_cost, discount }, ...] }` matching the Bills page total.
+
+Note: CUR only has data from whenever the export/partitioning was set up onward —
+months before that fall back to Cost Explorer automatically (see `_get_cost_data` in
+`cost_analyst.py`). `anomaly_detector.py`/`forecasting.py` still run on Cost Explorer
+since they need 12-24 months of trend history CUR doesn't have yet.
+
+---
+
 ## How it works
 
-**Per-service cost (historical month):** Cost Analyst calls `ce:GetCostAndUsage`
-grouped by SERVICE → returns every service's cost + grand total → UI renders a table
-with bars and a TOTAL row.
+**Per-service cost (historical month):** Cost Analyst first tries the CUR (Cost &
+Usage Report) via Athena — `SUM(line_item_unblended_cost)` and
+`SUM(line_item_net_unblended_cost)` grouped by `line_item_product_code`, filtered on
+the `billing_period` partition. This is the literal billed line-item data, so the
+total reconciles exactly with the Bills page (Cost Explorer's `NetAmortizedCost` can
+still drift for EDP/private-rate discounts on a linked account). If CUR has no data
+for that month yet (e.g. months before the export was partitioned), or the query
+fails, it falls back to `ce:GetCostAndUsage` (`NetAmortizedCost`) grouped by SERVICE.
+The UI renders a table with bars and a TOTAL row — when CUR data is available, it
+shows **Usage Cost / Actual Cost / Discount** per service; otherwise a single Cost
+column.
+
+**Month-over-month comparison:** when scanning the current (in-progress) month, the
+cost block also fetches the previous month's total and attaches a `comparison` object
+(`previousMonth`, `previousTotal`, `delta`, `deltaPct`) — shown as a badge above the
+cost table.
+
+**Forecasting is restricted to the current or future months** — a month that has
+already ended can't be meaningfully forecast, so the UI disables the Forecast target
+and the backend (`is_past_month`) returns a clear message instead of a number for
+closed months. The month list itself is built dynamically from `new Date()` (24
+months back, 6 forward), so the app rolls forward automatically — no hardcoded "current
+month" to update by hand.
 
 **Per-service forecast (future month):** `forecastByService` pulls 6 months of
 per-service history, derives EACH service's own growth rate, projects each forward to
@@ -178,7 +236,7 @@ cloud-guard-ai/
 │       ├── main.py                       # /api/identity /api/scan /api/query (FastAPI)
 │       ├── bedrock/bedrock_client.py     # invoke_claude + tool-use loop
 │       ├── agents/                       # orchestrator + 5 specialists
-│       └── tools/                        # cost_explorer (per-service + forecast), security, sts
+│       └── tools/                        # cost_explorer (per-service + forecast), athena_cur (exact bill match), security, sts
 ├── frontend/
 │   ├── Dockerfile
 │   ├── nginx.conf

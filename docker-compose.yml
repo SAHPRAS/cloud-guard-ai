@@ -9,6 +9,11 @@ services:
       - BEDROCK_MODEL_SONNET=${BEDROCK_MODEL_SONNET:-anthropic.claude-sonnet-4-6}
       - BEDROCK_MODEL_HAIKU=${BEDROCK_MODEL_HAIKU:-anthropic.claude-haiku-4-5}
       - PORT=3001
+      # CUR (Cost & Usage Report) via Athena — exact-to-the-cent cost, matches the Bills page
+      - ATHENA_REGION=${ATHENA_REGION:-eu-central-1}
+      - ATHENA_DATABASE=${ATHENA_DATABASE:-cur_db}
+      - ATHENA_TABLE=${ATHENA_TABLE:-aws_cur}
+      - ATHENA_OUTPUT_S3=${ATHENA_OUTPUT_S3:-s3://cloud-guard-ai/athena-results/}
     # No AWS keys here — the EC2 instance role provides credentials via IMDS.
     expose:
       - "3001"

@@ -55,6 +55,7 @@ export default function RadarConsole() {
   const [result, setResult] = useState(null);
   const [diag, setDiag] = useState(null);
   const [diagLoading, setDiagLoading] = useState(false);
+  const [breakdown, setBreakdown] = useState(null);
 
   const month = months[monthIdx];
   const future = month.future;
@@ -128,6 +129,7 @@ export default function RadarConsole() {
     if (scanning) return;
     setScanning(true);
     setResult(null);
+    setBreakdown(null);
     setFeed([]);
     setAgentState({});
     seedBlips();
@@ -139,11 +141,18 @@ export default function RadarConsole() {
     if (future) pushFeed("fc", "Future month — projection mode engaged");
 
     try {
-      const res = await fetch("/api/scan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target, month: month.iso, region }),
-      });
+      const breakdownReq = future
+        ? Promise.resolve(null)
+        : fetch(`/api/cost-breakdown?month=${encodeURIComponent(month.iso)}&region=${encodeURIComponent(region)}`).catch(() => null);
+
+      const [res, breakdownRes] = await Promise.all([
+        fetch("/api/scan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target, month: month.iso, region }),
+        }),
+        breakdownReq,
+      ]);
       const data = await res.json();
 
       // animate agent completion based on what came back
@@ -156,6 +165,14 @@ export default function RadarConsole() {
         else pushFeed("ok", `${k} complete`);
       });
       setResult(data);
+
+      if (breakdownRes) {
+        const bd = await breakdownRes.json();
+        const map = {};
+        (bd.services || []).forEach((s) => { map[s.service] = s.components; });
+        setBreakdown(map);
+      }
+
       pushFeed(future ? "fc" : "ok", future ? "Projection ready" : "Sweep complete");
     } catch (e) {
       pushFeed("crit", `Scan failed: ${e.message}`);
@@ -262,7 +279,7 @@ export default function RadarConsole() {
 
       {result && (
         <div className="results">
-          {renderCostTable(result)}
+          <CostTable result={result} breakdownMap={breakdown} />
           {Object.entries(result.blocks || {}).map(([k, v]) => (
             v.summary ? (
               <div key={k} className="rep-block">
@@ -323,7 +340,9 @@ function renderDiagnostics(diag, monthLabel) {
 }
 
 // Renders the per-service cost (historical) or per-service forecast (future) table.
-function renderCostTable(result) {
+// Historical rows with a known component breakdown (Usage/Discount/Credit/Tax/...) expand on click.
+function CostTable({ result, breakdownMap }) {
+  const [expanded, setExpanded] = useState(new Set());
   const future = result.mode === "forecast";
   let rows = [];
   let total = 0;
@@ -345,6 +364,15 @@ function renderCostTable(result) {
 
   const max = Math.max(...rows.map((r) => r.amount), 1);
   const barColor = future ? "#85b7eb" : "#3ddc84";
+  const fmt = (n) => `${n < 0 ? "-" : ""}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  function toggle(name) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+  }
 
   return (
     <div className="rep-block">
@@ -361,23 +389,40 @@ function renderCostTable(result) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
-            <tr key={r.name}>
-              <td className="ct-name">{r.name}</td>
-              <td className="ct-bar">
-                <div className="ct-track">
-                  <div className="ct-fill" style={{ width: `${(r.amount / max) * 100}%`, background: barColor }} />
-                </div>
-              </td>
-              <td className="ct-amt">${r.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-              {future && <td className="ct-range">${r.lo.toLocaleString()}–${r.hi.toLocaleString()}</td>}
-            </tr>
-          ))}
+          {rows.map((r) => {
+            const components = !future ? breakdownMap?.[r.name] : null;
+            const isOpen = expanded.has(r.name);
+            return (
+              <React.Fragment key={r.name}>
+                <tr className={components ? "ct-row-clickable" : ""} onClick={() => components && toggle(r.name)}>
+                  <td className="ct-name">
+                    {components && <i className={`ti ${isOpen ? "ti-chevron-down" : "ti-chevron-right"}`} style={{ marginRight: 4 }} />}
+                    {r.name}
+                  </td>
+                  <td className="ct-bar">
+                    <div className="ct-track">
+                      <div className="ct-fill" style={{ width: `${(r.amount / max) * 100}%`, background: barColor }} />
+                    </div>
+                  </td>
+                  <td className="ct-amt">{fmt(r.amount)}</td>
+                  {future && <td className="ct-range">${r.lo.toLocaleString()}–${r.hi.toLocaleString()}</td>}
+                </tr>
+                {isOpen && components && components.map((c) => (
+                  <tr key={r.name + c.type} className="ct-component">
+                    <td className="ct-name ct-component-name">{c.type}</td>
+                    <td></td>
+                    <td className="ct-amt">{fmt(c.amount)}</td>
+                    {future && <td></td>}
+                  </tr>
+                ))}
+              </React.Fragment>
+            );
+          })}
         </tbody>
         <tfoot>
           <tr>
             <td className="ct-total-lbl" colSpan={2}>{future ? "PROJECTED TOTAL" : "TOTAL"}</td>
-            <td className="ct-total" style={{ color: barColor }}>${total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+            <td className="ct-total" style={{ color: barColor }}>{fmt(total)}</td>
             {future && <td></td>}
           </tr>
         </tfoot>

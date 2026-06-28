@@ -91,6 +91,58 @@ async def get_cost_by_service(*, month, region=None):
     return out
 
 
+def _get_cost_breakdown_sync(month, region):
+    """Per-service cost split into its RECORD_TYPE components (Usage, Discount,
+    Credit, RIFee, Tax, ...) — mirrors the "expand a service" view on the Bills page."""
+    period = month_to_range(month)
+    filt = _region_filter(region)
+
+    kwargs = dict(
+        TimePeriod=period,
+        Granularity="MONTHLY",
+        Metrics=["NetAmortizedCost"],
+        GroupBy=[
+            {"Type": "DIMENSION", "Key": "SERVICE"},
+            {"Type": "DIMENSION", "Key": "RECORD_TYPE"},
+        ],
+    )
+    if filt:
+        kwargs["Filter"] = filt
+
+    res = _ce.get_cost_and_usage(**kwargs)
+    groups = (res.get("ResultsByTime") or [{}])[0].get("Groups") or []
+
+    by_service = {}
+    for g in groups:
+        service, record_type = g["Keys"]
+        amount = round(float(g["Metrics"]["NetAmortizedCost"]["Amount"]), 2)
+        if amount == 0:
+            continue
+        by_service.setdefault(service, []).append({"type": record_type, "amount": amount})
+
+    services = [
+        {
+            "service": service,
+            "total": round(sum(c["amount"] for c in components), 2),
+            "components": sorted(components, key=lambda c: c["amount"], reverse=True),
+        }
+        for service, components in by_service.items()
+    ]
+    services = [s for s in services if s["total"] > 0]
+    services.sort(key=lambda s: s["total"], reverse=True)
+    return {"period": period, "services": services}
+
+
+async def get_cost_breakdown(*, month, region=None):
+    key = f"breakdown:{month}:{region}"
+    cached = _cache_get(key)
+    if cached:
+        return cached
+    out = await asyncio.to_thread(_get_cost_breakdown_sync, month, region)
+    _cache_set(key, out)
+    return out
+
+
 _DIAGNOSTIC_METRICS = ["UnblendedCost", "NetUnblendedCost", "BlendedCost", "AmortizedCost", "NetAmortizedCost"]
 
 

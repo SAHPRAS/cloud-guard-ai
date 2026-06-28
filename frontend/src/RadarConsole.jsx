@@ -25,12 +25,15 @@ const TARGETS = [
   { id: "security", label: "Security", icon: "ti-lock" },
 ];
 
-// build month list: Jun 2024 .. Dec 2026, present = Jun 2026
+// build month list: 24 months of history .. 6 months of forecast horizon, anchored on today's real month
 function buildMonths() {
   const out = [];
-  const present = new Date(2026, 5, 1);
-  let d = new Date(2024, 5, 1);
-  const end = new Date(2026, 11, 1);
+  const present = new Date();
+  present.setDate(1);
+  const d = new Date(present);
+  d.setMonth(d.getMonth() - 24);
+  const end = new Date(present);
+  end.setMonth(end.getMonth() + 6);
   let i = 0;
   while (d <= end) {
     const label = d.toLocaleString("en", { month: "short" }).toUpperCase() + " " + String(d.getFullYear()).slice(2);
@@ -41,9 +44,14 @@ function buildMonths() {
   return out;
 }
 
+function currentMonthIso() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
 export default function RadarConsole() {
   const months = buildMonths();
-  const presentIdx = months.findIndex((m) => m.label === "JUN 26");
+  const presentIdx = months.findIndex((m) => m.iso === currentMonthIso());
 
   const [monthIdx, setMonthIdx] = useState(presentIdx);
   const [region, setRegion] = useState(REGIONS[0]);
@@ -56,9 +64,15 @@ export default function RadarConsole() {
 
   const month = months[monthIdx];
   const future = month.future;
+  const isPast = monthIdx < presentIdx;
 
   const canvasRef = useRef(null);
   const animRef = useRef({ angle: 0, blips: [], scanning: false });
+
+  // forecasting a closed month is meaningless — fall back if the user picks one while forecast is selected
+  useEffect(() => {
+    if (target === "forecast" && isPast) setTarget("full");
+  }, [monthIdx]);
 
   // ----- identity bar -----
   useEffect(() => {
@@ -194,11 +208,19 @@ export default function RadarConsole() {
       <div className="con-body">
         <div className="scanmenu">
           <div className="sm-h">Scan target</div>
-          {TARGETS.map((t) => (
-            <div key={t.id} className={`sm-item ${t.full ? "full" : ""} ${target === t.id ? "on" : ""}`} onClick={() => !scanning && setTarget(t.id)}>
-              <i className={`ti ${t.icon}`} /> {t.label}
-            </div>
-          ))}
+          {TARGETS.map((t) => {
+            const blocked = t.id === "forecast" && isPast;
+            return (
+              <div
+                key={t.id}
+                className={`sm-item ${t.full ? "full" : ""} ${target === t.id ? "on" : ""} ${blocked ? "disabled" : ""}`}
+                title={blocked ? `${month.label} has already ended — forecast isn't available for past months` : undefined}
+                onClick={() => !scanning && !blocked && setTarget(t.id)}
+              >
+                <i className={`ti ${t.icon}`} /> {t.label}
+              </div>
+            );
+          })}
         </div>
 
         <div className="radar-wrap">
@@ -274,6 +296,7 @@ function renderCostTable(result) {
     title = `Cost by service — ${result.month}`;
   }
 
+  const comparison = !future ? result.blocks?.cost?.comparison : null;
   const max = Math.max(...rows.map((r) => r.amount), 1);
   const barColor = future ? "#85b7eb" : "#3ddc84";
 
@@ -282,6 +305,14 @@ function renderCostTable(result) {
       <div className="rep-title">
         <i className={`ti ${future ? "ti-chart-dots" : "ti-chart-bar"}`} /> {title}
       </div>
+      {comparison && (
+        <div className={`mom-badge ${comparison.delta >= 0 ? "up" : "down"}`}>
+          <i className={`ti ${comparison.delta >= 0 ? "ti-trending-up" : "ti-trending-down"}`} />
+          vs {comparison.previousMonth}: ${comparison.previousTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          {" "}({comparison.delta >= 0 ? "+" : ""}${comparison.delta.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          {comparison.deltaPct !== null && `, ${comparison.delta >= 0 ? "+" : ""}${comparison.deltaPct}%`})
+        </div>
+      )}
       <table className="cost-table">
         <thead>
           <tr>

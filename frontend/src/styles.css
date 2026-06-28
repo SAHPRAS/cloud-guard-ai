@@ -22,6 +22,8 @@ body { background: #020806; font-family: "JetBrains Mono", ui-monospace, SFMono-
 .sm-item:hover { background: #0a2018; }
 .sm-item.on { background: #0d2a1f; border-color: #3ddc84; color: #3ddc84; }
 .sm-item.full { color: #ffbd2e; }
+.sm-item.disabled { color: #3a5448; cursor: not-allowed; }
+.sm-item.disabled:hover { background: none; }
 .sm-item i { font-size: 14px; }
 
 .radar-wrap { padding: 16px; display: flex; align-items: center; justify-content: center; border-right: 1px solid #103326; }
@@ -56,6 +58,10 @@ body { background: #020806; font-family: "JetBrains Mono", ui-monospace, SFMono-
 .rep-block { margin-bottom: 16px; }
 .rep-title { font-size: 11px; color: #3ddc84; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 8px; display: flex; gap: 7px; }
 .rep-summary { font-size: 12px; color: #a8edc8; line-height: 1.7; white-space: pre-wrap; }
+
+.mom-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; padding: 4px 9px; border-radius: 5px; margin-bottom: 8px; }
+.mom-badge.up { background: rgba(255, 95, 86, 0.12); color: #ff8c84; }
+.mom-badge.down { background: rgba(61, 220, 132, 0.12); color: #5bbf8c; }
 
 /* per-service cost / forecast table */
 .cost-table { width: 100%; border-collapse: collapse; }

@@ -53,9 +53,6 @@ export default function RadarConsole() {
   const [feed, setFeed] = useState([]);
   const [agentState, setAgentState] = useState({});
   const [result, setResult] = useState(null);
-  const [diag, setDiag] = useState(null);
-  const [diagLoading, setDiagLoading] = useState(false);
-  const [breakdown, setBreakdown] = useState(null);
 
   const month = months[monthIdx];
   const future = month.future;
@@ -129,7 +126,6 @@ export default function RadarConsole() {
     if (scanning) return;
     setScanning(true);
     setResult(null);
-    setBreakdown(null);
     setFeed([]);
     setAgentState({});
     seedBlips();
@@ -141,18 +137,11 @@ export default function RadarConsole() {
     if (future) pushFeed("fc", "Future month — projection mode engaged");
 
     try {
-      const breakdownReq = future
-        ? Promise.resolve(null)
-        : fetch(`/api/cost-breakdown?month=${encodeURIComponent(month.iso)}&region=${encodeURIComponent(region)}`).catch(() => null);
-
-      const [res, breakdownRes] = await Promise.all([
-        fetch("/api/scan", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ target, month: month.iso, region }),
-        }),
-        breakdownReq,
-      ]);
+      const res = await fetch("/api/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target, month: month.iso, region }),
+      });
       const data = await res.json();
 
       // animate agent completion based on what came back
@@ -165,35 +154,12 @@ export default function RadarConsole() {
         else pushFeed("ok", `${k} complete`);
       });
       setResult(data);
-
-      if (breakdownRes) {
-        const bd = await breakdownRes.json();
-        const map = {};
-        (bd.services || []).forEach((s) => { map[s.service] = s.components; });
-        setBreakdown(map);
-      }
-
       pushFeed(future ? "fc" : "ok", future ? "Projection ready" : "Sweep complete");
     } catch (e) {
       pushFeed("crit", `Scan failed: ${e.message}`);
     } finally {
       animRef.current.scanning = false;
       setScanning(false);
-    }
-  }
-
-  async function runDiagnostics() {
-    if (diagLoading) return;
-    setDiagLoading(true);
-    setDiag(null);
-    try {
-      const res = await fetch(`/api/diagnose-cost?month=${encodeURIComponent(month.iso)}`);
-      const data = await res.json();
-      setDiag(data);
-    } catch (e) {
-      setDiag({ error: e.message });
-    } finally {
-      setDiagLoading(false);
     }
   }
 
@@ -265,21 +231,14 @@ export default function RadarConsole() {
 
       <div className="go-bar">
         <span className="go-target">TARGET: <b>{target.toUpperCase()}</b></span>
-        {!future && (
-          <button className="scan-go" style={{ marginRight: 8 }} onClick={runDiagnostics} disabled={diagLoading}>
-            <i className="ti ti-receipt-2" /> {diagLoading ? "RECONCILING" : "RECONCILE VS BILLS"}
-          </button>
-        )}
         <button className="scan-go" onClick={runScan} disabled={scanning}>
           <i className="ti ti-radar-2" /> {scanning ? "SCANNING" : "INITIATE"}
         </button>
       </div>
 
-      {diag && renderDiagnostics(diag, month.label)}
-
       {result && (
         <div className="results">
-          <CostTable result={result} breakdownMap={breakdown} />
+          {renderCostTable(result)}
           {Object.entries(result.blocks || {}).map(([k, v]) => (
             v.summary ? (
               <div key={k} className="rep-block">
@@ -294,55 +253,8 @@ export default function RadarConsole() {
   );
 }
 
-// Renders the metric/record-type reconciliation against the Bills page grand total.
-function renderDiagnostics(diag, monthLabel) {
-  if (diag.error) {
-    return (
-      <div className="rep-block">
-        <div className="rep-title"><i className="ti ti-alert-octagon" /> Reconcile vs Bills — {monthLabel}</div>
-        <div className="rep-summary">Failed: {diag.error}</div>
-      </div>
-    );
-  }
-
-  const fmt = (n) => `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-  return (
-    <div className="rep-block">
-      <div className="rep-title"><i className="ti ti-receipt-2" /> Reconcile vs Bills — {monthLabel}</div>
-      <table className="cost-table">
-        <thead><tr><th>Metric</th><th style={{ textAlign: "right" }}>Total</th></tr></thead>
-        <tbody>
-          {Object.entries(diag.totals || {}).map(([metric, amount]) => (
-            <tr key={metric}>
-              <td className="ct-name">{metric}</td>
-              <td className="ct-amt">{fmt(amount)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      {Object.entries(diag.recordTypeBreakdown || {}).map(([metric, breakdown]) => (
-        <table key={metric} className="cost-table" style={{ marginTop: 12 }}>
-          <thead><tr><th>{metric} by RECORD_TYPE</th><th style={{ textAlign: "right" }}>Amount</th></tr></thead>
-          <tbody>
-            {Object.entries(breakdown).map(([type, amount]) => (
-              <tr key={type}>
-                <td className="ct-name">{type}</td>
-                <td className="ct-amt">{fmt(amount)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ))}
-    </div>
-  );
-}
-
 // Renders the per-service cost (historical) or per-service forecast (future) table.
-// Historical rows with a known component breakdown (Usage/Discount/Credit/Tax/...) expand on click.
-function CostTable({ result, breakdownMap }) {
-  const [expanded, setExpanded] = useState(new Set());
+function renderCostTable(result) {
   const future = result.mode === "forecast";
   let rows = [];
   let total = 0;
@@ -364,15 +276,6 @@ function CostTable({ result, breakdownMap }) {
 
   const max = Math.max(...rows.map((r) => r.amount), 1);
   const barColor = future ? "#85b7eb" : "#3ddc84";
-  const fmt = (n) => `${n < 0 ? "-" : ""}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-  function toggle(name) {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name); else next.add(name);
-      return next;
-    });
-  }
 
   return (
     <div className="rep-block">
@@ -389,40 +292,23 @@ function CostTable({ result, breakdownMap }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => {
-            const components = !future ? breakdownMap?.[r.name] : null;
-            const isOpen = expanded.has(r.name);
-            return (
-              <React.Fragment key={r.name}>
-                <tr className={components ? "ct-row-clickable" : ""} onClick={() => components && toggle(r.name)}>
-                  <td className="ct-name">
-                    {components && <i className={`ti ${isOpen ? "ti-chevron-down" : "ti-chevron-right"}`} style={{ marginRight: 4 }} />}
-                    {r.name}
-                  </td>
-                  <td className="ct-bar">
-                    <div className="ct-track">
-                      <div className="ct-fill" style={{ width: `${(r.amount / max) * 100}%`, background: barColor }} />
-                    </div>
-                  </td>
-                  <td className="ct-amt">{fmt(r.amount)}</td>
-                  {future && <td className="ct-range">${r.lo.toLocaleString()}–${r.hi.toLocaleString()}</td>}
-                </tr>
-                {isOpen && components && components.map((c) => (
-                  <tr key={r.name + c.type} className="ct-component">
-                    <td className="ct-name ct-component-name">{c.type}</td>
-                    <td></td>
-                    <td className="ct-amt">{fmt(c.amount)}</td>
-                    {future && <td></td>}
-                  </tr>
-                ))}
-              </React.Fragment>
-            );
-          })}
+          {rows.map((r) => (
+            <tr key={r.name}>
+              <td className="ct-name">{r.name}</td>
+              <td className="ct-bar">
+                <div className="ct-track">
+                  <div className="ct-fill" style={{ width: `${(r.amount / max) * 100}%`, background: barColor }} />
+                </div>
+              </td>
+              <td className="ct-amt">${r.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+              {future && <td className="ct-range">${r.lo.toLocaleString()}–${r.hi.toLocaleString()}</td>}
+            </tr>
+          ))}
         </tbody>
         <tfoot>
           <tr>
             <td className="ct-total-lbl" colSpan={2}>{future ? "PROJECTED TOTAL" : "TOTAL"}</td>
-            <td className="ct-total" style={{ color: barColor }}>{fmt(total)}</td>
+            <td className="ct-total" style={{ color: barColor }}>${total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
             {future && <td></td>}
           </tr>
         </tfoot>

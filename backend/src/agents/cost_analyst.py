@@ -37,7 +37,17 @@ async def _get_cost_data(month, region):
     """
     try:
         cur = await get_cur_cost_by_service(month=month)
-        services = [{"service": s["service"], "amount": s["actual_cost"]} for s in cur["services"] if s["service"] != "TOTAL"]
+        services = [
+            {
+                "service": s["service"],
+                "amount": s["actual_cost"],
+                "usageCost": s["usage_cost"],
+                "actualCost": s["actual_cost"],
+                "discount": s["discount"],
+            }
+            for s in cur["services"]
+            if s["service"] != "TOTAL"
+        ]
         if services:
             return {"period": {"Start": cur["billingPeriod"]}, "total": cur["totalCost"], "services": services, "source": "cur"}
     except Exception:  # noqa: BLE001

@@ -291,14 +291,16 @@ function renderCostTable(result) {
   } else {
     const c = result.blocks?.cost;
     if (!c || !c.data?.services) return null;
-    rows = c.data.services.map((s) => ({ name: s.service, amount: s.amount }));
+    rows = c.data.services.map((s) => ({ name: s.service, amount: s.amount, usageCost: s.usageCost, discount: s.discount }));
     total = c.data.total;
     title = `Cost by service — ${result.month}`;
   }
 
   const comparison = !future ? result.blocks?.cost?.comparison : null;
+  const hasBreakdown = !future && rows.length > 0 && rows[0].usageCost !== undefined;
   const max = Math.max(...rows.map((r) => r.amount), 1);
   const barColor = future ? "#85b7eb" : "#3ddc84";
+  const fmt = (n) => `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   return (
     <div className="rep-block">
@@ -318,7 +320,9 @@ function renderCostTable(result) {
           <tr>
             <th>Service</th>
             <th></th>
-            <th style={{ textAlign: "right" }}>{future ? "Projected" : "Cost"}</th>
+            {hasBreakdown && <th style={{ textAlign: "right" }}>Usage Cost</th>}
+            <th style={{ textAlign: "right" }}>{future ? "Projected" : hasBreakdown ? "Actual Cost" : "Cost"}</th>
+            {hasBreakdown && <th style={{ textAlign: "right" }}>Discount</th>}
             {future && <th style={{ textAlign: "right" }}>Range</th>}
           </tr>
         </thead>
@@ -331,7 +335,9 @@ function renderCostTable(result) {
                   <div className="ct-fill" style={{ width: `${(r.amount / max) * 100}%`, background: barColor }} />
                 </div>
               </td>
-              <td className="ct-amt">${r.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+              {hasBreakdown && <td className="ct-amt">{fmt(r.usageCost)}</td>}
+              <td className="ct-amt">{fmt(r.amount)}</td>
+              {hasBreakdown && <td className="ct-amt ct-discount">{r.discount > 0 ? `-${fmt(r.discount)}` : fmt(r.discount)}</td>}
               {future && <td className="ct-range">${r.lo.toLocaleString()}–${r.hi.toLocaleString()}</td>}
             </tr>
           ))}
@@ -339,7 +345,9 @@ function renderCostTable(result) {
         <tfoot>
           <tr>
             <td className="ct-total-lbl" colSpan={2}>{future ? "PROJECTED TOTAL" : "TOTAL"}</td>
-            <td className="ct-total" style={{ color: barColor }}>${total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+            {hasBreakdown && <td></td>}
+            <td className="ct-total" style={{ color: barColor }}>{fmt(total)}</td>
+            {hasBreakdown && <td></td>}
             {future && <td></td>}
           </tr>
         </tfoot>

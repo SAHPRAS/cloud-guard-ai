@@ -60,7 +60,7 @@ def _get_cost_by_service_sync(month, region):
     kwargs = dict(
         TimePeriod=period,
         Granularity="MONTHLY",
-        Metrics=["UnblendedCost"],
+        Metrics=["NetAmortizedCost"],
         GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
     )
     if filt:
@@ -70,7 +70,7 @@ def _get_cost_by_service_sync(month, region):
     groups = (res.get("ResultsByTime") or [{}])[0].get("Groups") or []
     services = sorted(
         (
-            {"service": g["Keys"][0], "amount": float(g["Metrics"]["UnblendedCost"]["Amount"])}
+            {"service": g["Keys"][0], "amount": float(g["Metrics"]["NetAmortizedCost"]["Amount"])}
             for g in groups
         ),
         key=lambda s: s["amount"],
@@ -109,7 +109,7 @@ def _get_monthly_trend_sync(months, region):
     kwargs = dict(
         TimePeriod={"Start": start.isoformat(), "End": end.isoformat()},
         Granularity="MONTHLY",
-        Metrics=["UnblendedCost"],
+        Metrics=["NetAmortizedCost"],
     )
     if filt:
         kwargs["Filter"] = filt
@@ -118,7 +118,7 @@ def _get_monthly_trend_sync(months, region):
     return [
         {
             "month": r["TimePeriod"]["Start"][:7],
-            "amount": round(float(r["Total"]["UnblendedCost"]["Amount"])),
+            "amount": round(float(r["Total"]["NetAmortizedCost"]["Amount"])),
         }
         for r in res.get("ResultsByTime") or []
     ]
@@ -136,7 +136,7 @@ def _get_cost_forecast_sync(month, region):
     kwargs = dict(
         TimePeriod=period,
         Granularity="MONTHLY",
-        Metric="UNBLENDED_COST",
+        Metric="NET_AMORTIZED_COST",
         PredictionIntervalLevel=80,
     )
     if filt:
@@ -172,7 +172,7 @@ def _get_service_trend_sync(months, region):
     kwargs = dict(
         TimePeriod={"Start": start.isoformat(), "End": end.isoformat()},
         Granularity="MONTHLY",
-        Metrics=["UnblendedCost"],
+        Metrics=["NetAmortizedCost"],
         GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
     )
     if filt:
@@ -186,7 +186,7 @@ def _get_service_trend_sync(months, region):
         month_labels.append(rt["TimePeriod"]["Start"][:7])
         for g in rt.get("Groups") or []:
             svc = g["Keys"][0]
-            amt = float(g["Metrics"]["UnblendedCost"]["Amount"])
+            amt = float(g["Metrics"]["NetAmortizedCost"]["Amount"])
             if svc not in series:
                 series[svc] = [0] * len(results)
             series[svc][i] = amt

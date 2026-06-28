@@ -24,7 +24,8 @@ TOOLS = [
 
 async def _tool_runner(name, input_):
     if name == "get_cost_by_service":
-        return await get_cost_by_service(**(input_ or {}))
+        params = input_ or {}
+        return await _get_cost_data(params.get("month"), params.get("region"))
     return {"error": "unknown tool"}
 
 

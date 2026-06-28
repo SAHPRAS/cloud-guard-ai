@@ -15,7 +15,7 @@ from .agents.forecasting import run_forecasting
 from .agents.orchestrator import classify_intent
 from .agents.rightsizing import run_rightsizing
 from .agents.security import run_security
-from .tools.cost_explorer_tools import month_to_range
+from .tools.cost_explorer_tools import get_cost_diagnostics, month_to_range
 from .tools.sts_tools import get_caller_identity
 
 app = FastAPI()
@@ -45,6 +45,19 @@ async def health():
 async def identity():
     """Profile / account / role bar."""
     return await get_caller_identity()
+
+
+@app.get("/api/diagnose-cost")
+async def diagnose_cost(month: str = "JUN 26"):
+    """
+    Compare every Cost Explorer metric (Unblended/Net.../Amortized) plus a
+    RECORD_TYPE breakdown for a month, to reconcile against the Bills page
+    grand total. e.g. /api/diagnose-cost?month=2026-05
+    """
+    try:
+        return JSONResponse(await get_cost_diagnostics(month=month))
+    except Exception as err:  # noqa: BLE001
+        return JSONResponse({"error": str(err)}, status_code=500)
 
 
 @app.post("/api/scan")

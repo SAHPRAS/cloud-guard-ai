@@ -78,7 +78,7 @@ def _get_cost_by_service_sync(month, region):
     )
     services = [s for s in services if s["amount"] > 0]
     total = sum(s["amount"] for s in services)
-    return {"period": period, "total": round(total), "services": services}
+    return {"period": period, "total": round(total, 2), "services": services}
 
 
 async def get_cost_by_service(*, month, region=None):
@@ -89,6 +89,43 @@ async def get_cost_by_service(*, month, region=None):
     out = await asyncio.to_thread(_get_cost_by_service_sync, month, region)
     _cache_set(key, out)
     return out
+
+
+_DIAGNOSTIC_METRICS = ["UnblendedCost", "NetUnblendedCost", "BlendedCost", "AmortizedCost", "NetAmortizedCost"]
+
+
+def _record_type_breakdown_sync(period, metric):
+    res = _ce.get_cost_and_usage(
+        TimePeriod=period,
+        Granularity="MONTHLY",
+        Metrics=[metric],
+        GroupBy=[{"Type": "DIMENSION", "Key": "RECORD_TYPE"}],
+    )
+    groups = (res.get("ResultsByTime") or [{}])[0].get("Groups") or []
+    return {g["Keys"][0]: round(float(g["Metrics"][metric]["Amount"]), 2) for g in groups}
+
+
+def _get_cost_diagnostics_sync(month):
+    period = month_to_range(month)
+
+    totals = {}
+    for metric in _DIAGNOSTIC_METRICS:
+        res = _ce.get_cost_and_usage(TimePeriod=period, Granularity="MONTHLY", Metrics=[metric])
+        totals[metric] = round(float(res["ResultsByTime"][0]["Total"][metric]["Amount"]), 2)
+
+    return {
+        "period": period,
+        "totals": totals,
+        "recordTypeBreakdown": {
+            "UnblendedCost": _record_type_breakdown_sync(period, "UnblendedCost"),
+            "NetAmortizedCost": _record_type_breakdown_sync(period, "NetAmortizedCost"),
+        },
+    }
+
+
+async def get_cost_diagnostics(*, month):
+    """Compare every CE cost metric + RECORD_TYPE breakdown — used to reconcile against the Bills page total."""
+    return await asyncio.to_thread(_get_cost_diagnostics_sync, month)
 
 
 def _month_window(months):

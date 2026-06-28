@@ -53,6 +53,8 @@ export default function RadarConsole() {
   const [feed, setFeed] = useState([]);
   const [agentState, setAgentState] = useState({});
   const [result, setResult] = useState(null);
+  const [diag, setDiag] = useState(null);
+  const [diagLoading, setDiagLoading] = useState(false);
 
   const month = months[monthIdx];
   const future = month.future;
@@ -163,6 +165,21 @@ export default function RadarConsole() {
     }
   }
 
+  async function runDiagnostics() {
+    if (diagLoading) return;
+    setDiagLoading(true);
+    setDiag(null);
+    try {
+      const res = await fetch(`/api/diagnose-cost?month=${encodeURIComponent(month.iso)}`);
+      const data = await res.json();
+      setDiag(data);
+    } catch (e) {
+      setDiag({ error: e.message });
+    } finally {
+      setDiagLoading(false);
+    }
+  }
+
   const feedIcon = { info: "ti-chevron-right", ok: "ti-circle-check", warn: "ti-alert-triangle", crit: "ti-alert-octagon", fc: "ti-chart-dots" };
 
   return (
@@ -231,10 +248,17 @@ export default function RadarConsole() {
 
       <div className="go-bar">
         <span className="go-target">TARGET: <b>{target.toUpperCase()}</b></span>
+        {!future && (
+          <button className="scan-go" style={{ marginRight: 8 }} onClick={runDiagnostics} disabled={diagLoading}>
+            <i className="ti ti-receipt-2" /> {diagLoading ? "RECONCILING" : "RECONCILE VS BILLS"}
+          </button>
+        )}
         <button className="scan-go" onClick={runScan} disabled={scanning}>
           <i className="ti ti-radar-2" /> {scanning ? "SCANNING" : "INITIATE"}
         </button>
       </div>
+
+      {diag && renderDiagnostics(diag, month.label)}
 
       {result && (
         <div className="results">
@@ -249,6 +273,51 @@ export default function RadarConsole() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// Renders the metric/record-type reconciliation against the Bills page grand total.
+function renderDiagnostics(diag, monthLabel) {
+  if (diag.error) {
+    return (
+      <div className="rep-block">
+        <div className="rep-title"><i className="ti ti-alert-octagon" /> Reconcile vs Bills — {monthLabel}</div>
+        <div className="rep-summary">Failed: {diag.error}</div>
+      </div>
+    );
+  }
+
+  const fmt = (n) => `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  return (
+    <div className="rep-block">
+      <div className="rep-title"><i className="ti ti-receipt-2" /> Reconcile vs Bills — {monthLabel}</div>
+      <table className="cost-table">
+        <thead><tr><th>Metric</th><th style={{ textAlign: "right" }}>Total</th></tr></thead>
+        <tbody>
+          {Object.entries(diag.totals || {}).map(([metric, amount]) => (
+            <tr key={metric}>
+              <td className="ct-name">{metric}</td>
+              <td className="ct-amt">{fmt(amount)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {Object.entries(diag.recordTypeBreakdown || {}).map(([metric, breakdown]) => (
+        <table key={metric} className="cost-table" style={{ marginTop: 12 }}>
+          <thead><tr><th>{metric} by RECORD_TYPE</th><th style={{ textAlign: "right" }}>Amount</th></tr></thead>
+          <tbody>
+            {Object.entries(breakdown).map(([type, amount]) => (
+              <tr key={type}>
+                <td className="ct-name">{type}</td>
+                <td className="ct-amt">{fmt(amount)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ))}
     </div>
   );
 }
@@ -269,7 +338,7 @@ function renderCostTable(result) {
   } else {
     const c = result.blocks?.cost;
     if (!c || !c.data?.services) return null;
-    rows = c.data.services.map((s) => ({ name: s.service, amount: Math.round(s.amount) }));
+    rows = c.data.services.map((s) => ({ name: s.service, amount: s.amount }));
     total = c.data.total;
     title = `Cost by service — ${result.month}`;
   }
@@ -300,7 +369,7 @@ function renderCostTable(result) {
                   <div className="ct-fill" style={{ width: `${(r.amount / max) * 100}%`, background: barColor }} />
                 </div>
               </td>
-              <td className="ct-amt">${r.amount.toLocaleString()}</td>
+              <td className="ct-amt">${r.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
               {future && <td className="ct-range">${r.lo.toLocaleString()}–${r.hi.toLocaleString()}</td>}
             </tr>
           ))}
@@ -308,7 +377,7 @@ function renderCostTable(result) {
         <tfoot>
           <tr>
             <td className="ct-total-lbl" colSpan={2}>{future ? "PROJECTED TOTAL" : "TOTAL"}</td>
-            <td className="ct-total" style={{ color: barColor }}>${total.toLocaleString()}</td>
+            <td className="ct-total" style={{ color: barColor }}>${total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
             {future && <td></td>}
           </tr>
         </tfoot>

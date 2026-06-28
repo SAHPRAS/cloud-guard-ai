@@ -12,7 +12,7 @@ import boto3
 
 from .cost_explorer_tools import month_to_range
 
-REGION = os.environ.get("ATHENA_REGION", "us-east-1")
+REGION = os.environ.get("ATHENA_REGION", "eu-central-1")
 DATABASE = os.environ.get("ATHENA_DATABASE", "cur_db")
 TABLE = os.environ.get("ATHENA_TABLE", "aws_cur")
 OUTPUT_S3 = os.environ.get("ATHENA_OUTPUT_S3", "s3://cloud-guard-ai/athena-results/")

@@ -15,6 +15,7 @@ from .agents.forecasting import run_forecasting
 from .agents.orchestrator import classify_intent
 from .agents.rightsizing import run_rightsizing
 from .agents.security import run_security
+from .tools.athena_cur_tools import get_cur_cost_by_service
 from .tools.cost_explorer_tools import get_cost_by_service, month_to_range
 from .tools.sts_tools import get_caller_identity
 
@@ -55,6 +56,20 @@ def previous_month_label(month):
 @app.get("/api/health")
 async def health():
     return {"ok": True}
+
+
+@app.get("/api/cur-cost")
+async def cur_cost(month: str = "JUN 26"):
+    """
+    Exact per-service cost straight from the CUR via Athena — for verifying
+    it reconciles with the Bills page before we wire it in as the main
+    data source for cost_analyst/anomaly/forecasting.
+    e.g. /api/cur-cost?month=2026-05
+    """
+    try:
+        return JSONResponse(await get_cur_cost_by_service(month=month))
+    except Exception as err:  # noqa: BLE001
+        return JSONResponse({"error": str(err)}, status_code=500)
 
 
 @app.get("/api/identity")

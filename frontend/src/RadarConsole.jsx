@@ -281,7 +281,7 @@ export default function RadarConsole() {
             if (k === "resources") return null; // rendered above via renderResourceBlock
             return v.summary ? (
               <div key={k} className="rep-block">
-                <div className="rep-title"><i className="ti ti-file-text" /> {k} — analysis</div>
+                {bedrockTitle("ti-file-text", `${k} — analysis`)}
                 <div className="rep-summary">{v.summary}</div>
                 {k === "anomaly" && renderAnomalyFindings(v)}
                 {renderTrace(v.trace)}
@@ -290,6 +290,16 @@ export default function RadarConsole() {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+// Every block of Claude-generated text/suggestions renders its title through this —
+// so it's always clear which parts of the page are raw AWS data vs. Claude Bedrock output.
+function bedrockTitle(icon, label) {
+  return (
+    <div className="rep-title">
+      <i className={`ti ${icon}`} /> <span className="bedrock-tag">Claude Bedrock</span> {label}
     </div>
   );
 }
@@ -321,7 +331,7 @@ function renderSynthesis(synthesis) {
   if (!synthesis || (!synthesis.headline && !synthesis.narrative)) return null;
   return (
     <div className="rep-block synthesis-block">
-      <div className="rep-title"><i className="ti ti-sparkles" /> Executive analysis</div>
+      {bedrockTitle("ti-sparkles", "Executive analysis")}
       {synthesis.headline && <div className="syn-headline">{synthesis.headline}</div>}
       {synthesis.narrative && <div className="rep-summary">{synthesis.narrative}</div>}
       {renderPriorityList(synthesis.priorities)}
@@ -342,7 +352,8 @@ function renderAnomalyFindings(block) {
   return renderPriorityList(items);
 }
 
-// Resource Auditor's Claude-generated fixes — one entry per flagged/risky resource.
+// Resource Auditor: the raw inventory table is factual AWS data; the fixes below it
+// are Claude's judgment call, so the two get separate blocks/headings.
 function renderResourceBlock(block) {
   if (!block || (!block.resources?.length && !block.errors)) return null;
   const findingItems = (block.findings || []).map((f) => ({
@@ -356,37 +367,48 @@ function renderResourceBlock(block) {
     (byType[r.type] = byType[r.type] || []).push(r);
   });
 
+  const rowClass = (r) =>
+    r.severity === "high" ? "res-row-critical" : r.severity === "medium" ? "res-row-flagged" : r.severity === "low" ? "res-row-low" : "";
+
   return (
-    <div className="rep-block">
-      <div className="rep-title">
-        <i className="ti ti-stack-2" /> Resource inventory
-        {block.counts && <span className="res-count-badge">{block.counts.total} resources · {block.counts.flagged} flagged</span>}
-      </div>
-      {Object.entries(byType).map(([type, items]) => (
-        <table key={type} className="cost-table res-table">
-          <thead>
-            <tr><th>{type.toUpperCase()}</th><th>Status</th><th style={{ textAlign: "right" }}>Flags</th></tr>
-          </thead>
-          <tbody>
-            {items.map((r) => (
-              <tr key={r.id} className={r.flags?.length ? "res-row-flagged" : ""}>
-                <td className="ct-name">{r.name}<div className="res-detail">{r.detail}</div></td>
-                <td>{r.status}</td>
-                <td className="ct-amt">{(r.flags || []).join(", ") || "—"}</td>
-              </tr>
+    <>
+      <div className="rep-block">
+        <div className="rep-title">
+          <i className="ti ti-stack-2" /> Resource inventory
+          {block.counts && <span className="res-count-badge">{block.counts.total} resources · {block.counts.flagged} flagged</span>}
+        </div>
+        {Object.entries(byType).map(([type, items]) => (
+          <table key={type} className="cost-table res-table">
+            <thead>
+              <tr><th>{type.toUpperCase()}</th><th>Status</th><th style={{ textAlign: "right" }}>Flags</th></tr>
+            </thead>
+            <tbody>
+              {items.map((r) => (
+                <tr key={r.id} className={rowClass(r)}>
+                  <td className="ct-name">{r.name}<div className="res-detail">{r.detail}</div></td>
+                  <td><span className={`res-status res-status-${r.severity || "ok"}`}>{r.status}</span></td>
+                  <td className="ct-amt">{(r.flags || []).join(", ") || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ))}
+        {block.errors && Object.keys(block.errors).length > 0 && (
+          <div className="res-errors">
+            {Object.entries(block.errors).map(([cat, err]) => (
+              <div key={cat} className="res-error-line">{cat}: {err.hint || err.error}</div>
             ))}
-          </tbody>
-        </table>
-      ))}
-      {block.errors && Object.keys(block.errors).length > 0 && (
-        <div className="res-errors">
-          {Object.entries(block.errors).map(([cat, err]) => (
-            <div key={cat} className="res-error-line">{cat}: {err.hint || err.error}</div>
-          ))}
+          </div>
+        )}
+      </div>
+      {(findingItems.length > 0 || block.summary) && (
+        <div className="rep-block">
+          {bedrockTitle("ti-shield-check", "Resource fixes")}
+          {block.summary && <div className="rep-summary">{block.summary}</div>}
+          {renderPriorityList(findingItems)}
         </div>
       )}
-      {renderPriorityList(findingItems)}
-    </div>
+    </>
   );
 }
 
@@ -414,7 +436,7 @@ function ForecastChart({ forecast }) {
 
   return (
     <div className="rep-block">
-      <div className="rep-title"><i className="ti ti-chart-dots" /> Spend trend → AI forecast ({forecast.confidence}% confidence)</div>
+      {bedrockTitle("ti-chart-dots", `Spend forecast (${forecast.confidence}% confidence)`)}
       <svg viewBox={`0 0 ${W} ${H}`} className="forecast-chart">
         {[0, 0.25, 0.5, 0.75, 1].map((f) => (
           <line key={f} x1={padL} x2={W - padR} y1={padT + innerH * f} y2={padT + innerH * f} className="fc-grid" />
@@ -478,12 +500,14 @@ function renderCostTable(result) {
   let rows = [];
   let total = 0;
   let title = "";
+  let isBedrock = false;
 
   if (future) {
     const f = result.blocks?.forecast;
     if (!f || !f.services) return null;
     rows = f.services.map((s) => ({ name: s.service, amount: s.projected, lo: s.low, hi: s.high }));
     total = f.total;
+    isBedrock = !!f.aiGenerated;
     title = `${f.aiGenerated ? "AI-forecasted" : "Forecasted"} cost by service — ${result.month} (${f.confidence}% confidence)`;
   } else {
     const c = result.blocks?.cost;
@@ -501,9 +525,9 @@ function renderCostTable(result) {
 
   return (
     <div className="rep-block">
-      <div className="rep-title">
-        <i className={`ti ${future ? "ti-chart-dots" : "ti-chart-bar"}`} /> {title}
-      </div>
+      {isBedrock
+        ? bedrockTitle(future ? "ti-chart-dots" : "ti-chart-bar", title)
+        : <div className="rep-title"><i className={`ti ${future ? "ti-chart-dots" : "ti-chart-bar"}`} /> {title}</div>}
       {comparison && (
         <div className={`mom-badge ${comparison.delta >= 0 ? "up" : "down"}`}>
           <i className={`ti ${comparison.delta >= 0 ? "ti-trending-up" : "ti-trending-down"}`} />

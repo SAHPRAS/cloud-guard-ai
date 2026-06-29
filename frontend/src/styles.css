@@ -117,8 +117,21 @@ body { background: #020806; font-family: "JetBrains Mono", ui-monospace, SFMono-
 .res-detail { font-size: 9.5px; color: #5bbf8c; margin-top: 2px; }
 .res-row-flagged .ct-amt { color: #ffbd2e; }
 .res-row-flagged td { background: rgba(255, 189, 46, 0.04); }
+.res-row-critical .ct-amt { color: #ff8c84; }
+.res-row-critical td { background: rgba(255, 95, 86, 0.07); }
+.res-row-critical .ct-name { color: #ffb3ae; }
+.res-row-low td { background: rgba(133, 183, 235, 0.03); }
 .res-errors { margin-top: 6px; }
 .res-error-line { font-size: 9.5px; color: #3a5448; }
+
+.res-status { font-size: 9.5px; padding: 2px 7px; border-radius: 10px; letter-spacing: 0.5px; white-space: nowrap; }
+.res-status-ok { background: rgba(61, 220, 132, 0.1); color: #5bbf8c; }
+.res-status-low { background: rgba(133, 183, 235, 0.12); color: #85b7eb; }
+.res-status-medium { background: rgba(255, 189, 46, 0.15); color: #ffd97a; }
+.res-status-high { background: rgba(255, 95, 86, 0.18); color: #ff8c84; }
+
+/* "Claude Bedrock" tag — marks every block of Claude-generated text/suggestions */
+.bedrock-tag { color: #b186e8; background: rgba(177, 134, 232, 0.12); border-radius: 10px; padding: 2px 8px; font-size: 9px; letter-spacing: 1px; }
 
 /* Forecast trend → projection chart */
 .forecast-chart { width: 100%; height: auto; }

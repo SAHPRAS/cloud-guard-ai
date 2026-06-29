@@ -3,14 +3,19 @@
 A 7-agent AWS cost & security console with a radar-style UI, powered by **AWS Bedrock (Claude)**.
 Pick any month — historical months show **actual cost per service + total**; future months show
 an **AI-reasoned forecast per service + projected total**, charted against trailing actuals.
-A Resource Auditor inventories every resource the account is currently running across 16
-categories — EC2, EBS, Elastic IPs, NAT Gateways, DynamoDB, ElastiCache, CloudFront, SNS, SQS,
-RDS, Lambda, ECS, EKS, ECR images + vulnerability scan findings, S3, load balancers — and Claude
-reviews the whole inventory for concrete fixes. Every scan ends with a **Synthesizer** pass
-that reads every other agent's
-*structured* output (not just their text) in one more Bedrock call and surfaces cross-cutting
-insights (e.g. a cost spike that lines up with a security finding) as a ranked priority list.
-Runs on a single EC2 box via Docker Compose.
+A Resource Auditor inventories every resource the account is currently running across 17
+categories — EC2 (running and stopped), EBS, Elastic IPs, NAT Gateways, Security Groups (every
+ingress rule checked for internet exposure), DynamoDB, ElastiCache, CloudFront, SNS, SQS, RDS,
+Lambda, ECS, EKS, ECR images + vulnerability scan findings, S3, every load balancer type — and
+Claude reviews the whole inventory for concrete fixes. Every resource carries a real status
+(EC2 running/stopped, EBS in-use/available, etc.) and a computed severity, so critical findings
+(open security groups, public RDS, vulnerable ECR images) are visually highlighted rather than
+buried in a flat list. Every block of Claude-generated text in the UI is labeled **"Claude
+Bedrock"** so it's always clear which parts of the page are raw AWS data vs. AI output. Every
+scan ends with a **Synthesizer** pass that reads every other agent's *structured* output (not
+just their text) in one more Bedrock call and surfaces cross-cutting insights (e.g. a cost
+spike that lines up with a security finding) as a ranked priority list. Runs on a single EC2
+box via Docker Compose.
 
 ```
 EC2 (t3.large, eu-central-1)
@@ -35,7 +40,7 @@ of having to parse free text.
 | Rightsizing | Over-provisioned EC2/EKS/DocDB + savings | Claude Sonnet |
 | Forecasting | Reasons over 24mo trend per service and submits its own structured projection (not just a copied growth-model number) — current/future months only | Claude Sonnet |
 | Security | SecurityHub + GuardDuty findings | Claude Sonnet |
-| Resource Auditor | Inventories EC2/EBS/EIP/NAT/DynamoDB/ElastiCache/CloudFront/SNS/SQS/RDS/Lambda/ECS/EKS/ECR (+ image vuln scans)/S3/ELB currently running, Claude reviews the lot for concrete fixes — current/historical months only | Claude Sonnet |
+| Resource Auditor | Inventories EC2/EBS/EIP/NAT/Security Groups/DynamoDB/ElastiCache/CloudFront/SNS/SQS/RDS/Lambda/ECS/EKS/ECR (+ image vuln scans)/S3/ELB currently running, Claude reviews the lot for concrete fixes — current/historical months only | Claude Sonnet |
 | Synthesizer | Reads every other agent's structured output from the same scan and surfaces cross-cutting insights + a ranked priority list | Claude Sonnet |
 
 ---
@@ -110,9 +115,10 @@ aws iam add-role-to-instance-profile \
   --instance-profile-name CloudGuardAI-EC2 --role-name CloudGuardAI-EC2
 ```
 **Already deployed?** `infra/iam-policy.json` gained a `ResourceInventoryRead` statement
-(describe/list-only — EC2 volumes/addresses/NAT, DynamoDB, ElastiCache, CloudFront, SNS, SQS,
-RDS, Lambda, ECS, ECR, S3, ELB) for the Resource Auditor agent. Re-run just the
-`put-role-policy` command above against your existing role to pick it up — it's idempotent.
+(describe/list-only — EC2 volumes/addresses/NAT/**security groups**, DynamoDB, ElastiCache,
+CloudFront, SNS, SQS, RDS, Lambda, ECS, ECR, S3, ELB) for the Resource Auditor agent. Re-run
+just the `put-role-policy` command above against your existing role to pick it up — it's
+idempotent.
 
 ### 3. Push this project to GitHub (from your laptop)
 ```bash
@@ -244,21 +250,36 @@ UI never shows nothing.
 **Resource inventory (current/historical months) is also AI-reviewed:** `get_full_inventory`
 gathers every resource type the IAM role can see, in parallel, each category isolated so one
 disabled service doesn't blank the rest:
-- **Compute/network:** EC2 instances, EBS volumes (flags unattached — still billed), Elastic
-  IPs (flags unassociated — still billed), NAT Gateways, load balancers (flags internet-facing)
-- **Data:** RDS (flags publicly-accessible), DynamoDB, ElastiCache
-- **Containers:** ECS (flags desired≠running task count), EKS (flags public API endpoint)
+- **Compute/network:** EC2 instances — **running and stopped, not just running** (flags
+  stopped instances, since they're still billed for attached EBS storage), EBS volumes (flags
+  unattached — still billed), Elastic IPs (flags unassociated — still billed), NAT Gateways,
+  every load balancer — **ALB/NLB/GWLB (elbv2) and legacy Classic LBs (elb v1), internet-facing
+  and internal alike**, not just internet-facing ALBs
+- **Network security:** Security Groups — every ingress rule is checked for exposure to
+  `0.0.0.0/0`/`::/0`; a rule opening a sensitive port (SSH, RDP, MySQL, Postgres, MSSQL,
+  MongoDB, Redis, Elasticsearch, VNC, Telnet, FTP) or all ports/protocols is `severity: high`,
+  any other internet-open rule is `medium`
+- **Data:** RDS (flags publicly-accessible → `high`), DynamoDB, ElastiCache
+- **Containers:** ECS (flags desired≠running task count → `medium`), EKS (flags public API
+  endpoint → `high`)
 - **Images:** ECR repos, with the latest pushed image's vulnerability scan severity counts
-- **Storage/edge/messaging:** S3 (flags public-access-block + missing default encryption),
-  CloudFront, SNS, SQS
+  (`high` if any CRITICAL/HIGH CVE, `low` if only lesser ones)
+- **Storage/edge/messaging:** S3 (flags public-access-block → `high` / missing default
+  encryption → `medium`), CloudFront, SNS, SQS
 
-Those heuristic flags are only a starting point handed to Claude alongside the *entire*
-inventory (every category, not just the flagged resources); the Resource Auditor agent calls
-`submit_findings` with its own judged list of concrete fixes (e.g. "rebuild from a patched
-base image" for a vulnerable ECR image, or "delete this unattached volume" for an idle EBS
-disk), citing real figures from the data — it's told explicitly not to invent a CVE or issue
-the data doesn't support. Not available for future months (there's nothing "currently
-running" to inventory yet).
+Every resource carries a real status string from its AWS API (EC2 `running`/`stopped`, EBS
+`in-use`/`available`, security groups `restricted`/`open-to-internet`, etc.) plus a computed
+`severity` (`high`/`medium`/`low`/none) that the UI uses to highlight rows — high-severity rows
+get a red tint, medium an amber tint. Those flags/severities are only a starting point handed
+to Claude alongside the *entire* inventory (every category, not just the flagged resources);
+the Resource Auditor agent calls `submit_findings` with its own judged list of concrete fixes
+(e.g. "remove the 0.0.0.0/0:22 ingress rule, use SSM Session Manager instead" for an open
+security group, "rebuild from a patched base image" for a vulnerable ECR image, or "delete this
+unattached volume" for an idle EBS disk), citing real figures from the data — it's told
+explicitly not to invent a CVE or issue the data doesn't support. Not available for future
+months (there's nothing "currently running" to inventory yet). The findings render in their own
+"Claude Bedrock — Resource fixes" block, separate from the raw inventory table, so it's clear
+which part is AWS fact and which is Claude's judgment.
 
 **Anomaly detection is judged by Claude, not a fixed threshold:** a >25% month-over-month
 change is computed in Python as a hint, but the Anomaly Detector agent decides which flagged
@@ -272,6 +293,13 @@ find connections a single-domain agent can't see — e.g. a cost spike that line
 security finding, or a rightsizing candidate that explains part of a forecasted increase.
 It returns a headline, a short cross-agent narrative, and a ranked priority list shown at
 the top of the results as "Executive analysis."
+
+**Every Claude-generated block is labeled "Claude Bedrock" in the UI** (`bedrockTitle()` in
+`RadarConsole.jsx`) — the executive analysis, every per-agent analysis/findings block, the
+forecast (when AI-generated), and the resource fixes block all carry the tag. Tables of raw AWS
+data (the historical cost table, the resource inventory table) deliberately don't, so it's
+always visually obvious which numbers are AWS fact and which are Claude's interpretation of
+that fact.
 
 **Auth (no key management):** the backend holds no AWS keys. The SDK reads temporary
 credentials from the EC2 instance role via IMDS, and AWS rotates them automatically.

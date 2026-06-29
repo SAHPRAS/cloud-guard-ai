@@ -22,26 +22,32 @@ def _client(service, region):
 
 def _list_ec2_instances_sync(region):
     client = _client("ec2", region)
-    res = client.describe_instances(Filters=[{"Name": "instance-state-name", "Values": ["running"]}])
+    # Every instance except terminated ones (those no longer exist/cost anything) —
+    # running AND stopped/stopping/pending, so idle-but-not-cleaned-up instances surface too.
+    res = client.describe_instances(
+        Filters=[{"Name": "instance-state-name", "Values": ["pending", "running", "stopping", "stopped"]}]
+    )
     out = []
     for reservation in res.get("Reservations") or []:
         for inst in reservation.get("Instances") or []:
             name = next((t["Value"] for t in inst.get("Tags") or [] if t["Key"] == "Name"), inst["InstanceId"])
+            state = inst["State"]["Name"]
             out.append(
                 {
                     "type": "ec2",
                     "id": inst["InstanceId"],
                     "name": name,
                     "detail": f"{inst['InstanceType']} · {inst.get('Placement', {}).get('AvailabilityZone', '')}",
-                    "status": inst["State"]["Name"],
-                    "flags": [],
+                    "status": state,
+                    "flags": (["stopped-still-billed-for-ebs"] if state == "stopped" else []),
+                    "severity": ("low" if state == "stopped" else None),
                 }
             )
     return out
 
 
 async def list_ec2_instances_for_inventory(*, region=None):
-    """Running EC2 instances. Feeds resource inventory (rightsizing's CPU check is a separate, deeper pass)."""
+    """EC2 instances, running or stopped (excludes terminated). Feeds resource inventory — rightsizing's CPU check is a separate, deeper pass on running instances only."""
     try:
         return await asyncio.to_thread(_list_ec2_instances_sync, region)
     except Exception as e:  # noqa: BLE001
@@ -60,8 +66,9 @@ def _list_ebs_volumes_sync(region):
                 "id": vol["VolumeId"],
                 "name": name,
                 "detail": f"{vol.get('VolumeType')} · {vol.get('Size')}GB",
-                "status": vol.get("State"),
+                "status": vol.get("State"),  # AWS native: "available" (unattached) | "in-use" | "creating" | ...
                 "flags": (["unattached-still-billed"] if unattached else []),
+                "severity": ("medium" if unattached else None),
             }
         )
     return out
@@ -88,6 +95,7 @@ def _list_elastic_ips_sync(region):
                 "detail": f"domain {addr.get('Domain')}" + (f" · attached to {addr.get('InstanceId')}" if addr.get("InstanceId") else ""),
                 "status": "associated" if not unassociated else "unassociated",
                 "flags": (["unassociated-still-billed"] if unassociated else []),
+                "severity": ("medium" if unassociated else None),
             }
         )
     return out
@@ -113,6 +121,7 @@ def _list_nat_gateways_sync(region):
                 "detail": f"vpc {nat.get('VpcId')} · subnet {nat.get('SubnetId')}",
                 "status": nat.get("State"),
                 "flags": [],
+                "severity": None,
             }
         )
     return out
@@ -124,6 +133,75 @@ async def list_nat_gateways(*, region=None):
         return await asyncio.to_thread(_list_nat_gateways_sync, region)
     except Exception as e:  # noqa: BLE001
         return {"error": str(e), "hint": "Check ec2:DescribeNatGateways permission for this region"}
+
+
+# ---------- Security Groups ----------
+
+_SENSITIVE_PORTS = {
+    21: "FTP", 22: "SSH", 23: "Telnet", 1433: "MSSQL", 3306: "MySQL",
+    3389: "RDP", 5432: "PostgreSQL", 5900: "VNC", 6379: "Redis",
+    9200: "Elasticsearch", 27017: "MongoDB",
+}
+
+
+def _rule_open_to_world(perm):
+    if any(r.get("CidrIp") == "0.0.0.0/0" for r in perm.get("IpRanges") or []):
+        return True
+    if any(r.get("CidrIpv6") == "::/0" for r in perm.get("Ipv6Ranges") or []):
+        return True
+    return False
+
+
+def _rule_risk(perm):
+    """(severity, description) for an ingress rule open to the world, or (None, None) if it isn't."""
+    if not _rule_open_to_world(perm):
+        return None, None
+    proto = perm.get("IpProtocol")
+    from_port, to_port = perm.get("FromPort"), perm.get("ToPort")
+    if proto == "-1" or (from_port == 0 and to_port == 65535):
+        return "high", "ALL ports/protocols open to the internet (0.0.0.0/0)"
+    if from_port is not None and to_port is not None:
+        hits = [name for port, name in _SENSITIVE_PORTS.items() if from_port <= port <= to_port]
+        if hits:
+            return "high", f"{', '.join(hits)} open to the internet (port {from_port}-{to_port})"
+        return "medium", f"port {from_port}-{to_port}/{proto} open to the internet"
+    return "medium", f"{proto} open to the internet"
+
+
+def _list_security_groups_sync(region):
+    client = _client("ec2", region)
+    out = []
+    for sg in client.describe_security_groups().get("SecurityGroups") or []:
+        risky_rules = []
+        worst = None
+        for perm in sg.get("IpPermissions") or []:
+            sev, desc = _rule_risk(perm)
+            if sev:
+                risky_rules.append(desc)
+                if sev == "high":
+                    worst = "high"
+                elif worst != "high":
+                    worst = "medium"
+        out.append(
+            {
+                "type": "sg",
+                "id": sg["GroupId"],
+                "name": sg.get("GroupName", sg["GroupId"]),
+                "detail": (sg.get("Description") or "no description") + (f" · vpc {sg.get('VpcId')}" if sg.get("VpcId") else ""),
+                "status": "open-to-internet" if risky_rules else "restricted",
+                "flags": risky_rules,
+                "severity": worst,
+            }
+        )
+    return out
+
+
+async def list_security_groups(*, region=None):
+    """Security groups — flags ingress rules open to 0.0.0.0/0 / ::/0; severity 'high' for sensitive ports or all-traffic, 'medium' for other open ports. Feeds resource inventory."""
+    try:
+        return await asyncio.to_thread(_list_security_groups_sync, region)
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e), "hint": "Check ec2:DescribeSecurityGroups permission for this region"}
 
 
 # ---------- DynamoDB ----------
@@ -142,6 +220,7 @@ def _list_dynamodb_sync(region):
                 "detail": f"{billing} · {t.get('ItemCount', 0)} items · {round((t.get('TableSizeBytes') or 0) / 1e6, 1)}MB",
                 "status": t.get("TableStatus"),
                 "flags": [],
+                "severity": None,
             }
         )
     return out
@@ -169,6 +248,7 @@ def _list_elasticache_sync(region):
                 "detail": f"{c.get('Engine')} · {c.get('CacheNodeType')} · {c.get('NumCacheNodes')} node(s)",
                 "status": c.get("CacheClusterStatus"),
                 "flags": [],
+                "severity": None,
             }
         )
     return out
@@ -196,6 +276,7 @@ def _list_cloudfront_sync():
                 "detail": f"{'enabled' if d.get('Enabled') else 'disabled'} · {d.get('PriceClass')}",
                 "status": d.get("Status"),
                 "flags": ([] if d.get("Enabled") else ["disabled-still-listed"]),
+                "severity": (None if d.get("Enabled") else "low"),
             }
         )
     return out
@@ -216,7 +297,7 @@ def _list_sns_sync(region):
     out = []
     for t in client.list_topics().get("Topics") or []:
         arn = t["TopicArn"]
-        out.append({"type": "sns", "id": arn, "name": arn.split(":")[-1], "detail": arn, "status": "active", "flags": []})
+        out.append({"type": "sns", "id": arn, "name": arn.split(":")[-1], "detail": arn, "status": "active", "flags": [], "severity": None})
     return out
 
 
@@ -233,7 +314,7 @@ def _list_sqs_sync(region):
     out = []
     for url in client.list_queues().get("QueueUrls") or []:
         name = url.split("/")[-1]
-        out.append({"type": "sqs", "id": url, "name": name, "detail": url, "status": "active", "flags": []})
+        out.append({"type": "sqs", "id": url, "name": name, "detail": url, "status": "active", "flags": [], "severity": None})
     return out
 
 
@@ -263,6 +344,7 @@ def _list_rds_sync(region):
                 "multiAz": db.get("MultiAZ", False),
                 "storageGb": db.get("AllocatedStorage"),
                 "flags": (["publicly-accessible"] if db.get("PubliclyAccessible") else []),
+                "severity": ("high" if db.get("PubliclyAccessible") else None),
             }
         )
     return out
@@ -293,6 +375,7 @@ def _list_lambda_sync(region):
                     "status": fn.get("State", "Active"),
                     "lastModified": fn.get("LastModified"),
                     "flags": [],
+                    "severity": None,
                 }
             )
             if len(out) >= 200:
@@ -330,6 +413,7 @@ def _list_ecs_sync(region):
                     "detail": f"cluster {cluster_name} · {svc.get('launchType', 'n/a')} · {running}/{desired} tasks",
                     "status": svc.get("status"),
                     "flags": (["desired-running-mismatch"] if desired != running else []),
+                    "severity": ("medium" if desired != running else None),
                 }
             )
     return out
@@ -358,6 +442,7 @@ def _list_eks_sync(region):
                 "detail": f"k8s {detail.get('version')} · endpoint {'public' if (detail.get('resourcesVpcConfig') or {}).get('endpointPublicAccess') else 'private'}",
                 "status": detail.get("status"),
                 "flags": (["public-api-endpoint"] if (detail.get("resourcesVpcConfig") or {}).get("endpointPublicAccess") else []),
+                "severity": ("high" if (detail.get("resourcesVpcConfig") or {}).get("endpointPublicAccess") else None),
             }
         )
     return out
@@ -400,6 +485,7 @@ def _list_ecr_sync(region):
             pass  # scanning may be disabled on this repo, or no images yet — leave sev_counts empty
 
         critical_high = sev_counts.get("CRITICAL", 0) + sev_counts.get("HIGH", 0)
+        any_vulns = sum(sev_counts.values()) if sev_counts else 0
         out.append(
             {
                 "type": "ecr",
@@ -410,6 +496,7 @@ def _list_ecr_sync(region):
                 "status": "vulnerable" if critical_high else "ok",
                 "vulnSeverityCounts": sev_counts,
                 "flags": (["critical-or-high-vulnerabilities"] if critical_high else []),
+                "severity": "high" if critical_high else ("low" if any_vulns else None),
             }
         )
     return out
@@ -448,6 +535,7 @@ def _list_s3_sync():
             flags.append("public-access-not-fully-blocked")
         if not encrypted:
             flags.append("no-default-encryption")
+        severity = "high" if public != "blocked" else ("medium" if not encrypted else None)
         out.append(
             {
                 "type": "s3",
@@ -456,6 +544,7 @@ def _list_s3_sync():
                 "detail": f"public access: {public} · default encryption: {'on' if encrypted else 'off'}",
                 "status": "flagged" if flags else "ok",
                 "flags": flags,
+                "severity": severity,
             }
         )
     return out
@@ -469,12 +558,15 @@ async def list_s3_buckets():
         return {"error": str(e), "hint": "Check s3:ListAllMyBuckets/GetPublicAccessBlock/GetEncryptionConfiguration permission"}
 
 
-# ---------- Load balancers ----------
+# ---------- Load balancers (ALB/NLB/GWLB via elbv2, plus legacy Classic LB via elb) ----------
 
 def _list_elb_sync(region):
-    client = _client("elbv2", region)
     out = []
-    for lb in client.describe_load_balancers().get("LoadBalancers") or []:
+
+    # ALB / NLB / Gateway LB — describe_load_balancers with no Names filter already
+    # returns every one regardless of scheme (internet-facing AND internal).
+    v2 = _client("elbv2", region)
+    for lb in v2.describe_load_balancers().get("LoadBalancers") or []:
         out.append(
             {
                 "type": "elb",
@@ -483,13 +575,32 @@ def _list_elb_sync(region):
                 "detail": f"{lb.get('Type')} · {lb.get('Scheme')}",
                 "status": lb.get("State", {}).get("Code"),
                 "flags": (["internet-facing"] if lb.get("Scheme") == "internet-facing" else []),
+                "severity": ("low" if lb.get("Scheme") == "internet-facing" else None),
             }
         )
+
+    # Legacy Classic Load Balancers live under the separate v1 'elb' API — easy to miss
+    # since they don't show up in describe_load_balancers on elbv2 at all.
+    classic = _client("elb", region)
+    for lb in classic.describe_load_balancers().get("LoadBalancerDescriptions") or []:
+        scheme = lb.get("Scheme", "internet-facing")
+        out.append(
+            {
+                "type": "elb",
+                "id": lb["LoadBalancerName"],
+                "name": lb["LoadBalancerName"],
+                "detail": f"classic · {scheme}",
+                "status": "active",
+                "flags": (["internet-facing"] if scheme == "internet-facing" else []) + ["classic-load-balancer-consider-migrating"],
+                "severity": "low",
+            }
+        )
+
     return out
 
 
 async def list_load_balancers(*, region=None):
-    """ALB/NLB — scheme (internet-facing/internal), state. Feeds resource inventory."""
+    """Every load balancer — ALB/NLB/GWLB (elbv2) + legacy Classic LB (elb v1) — scheme, state. Feeds resource inventory."""
     try:
         return await asyncio.to_thread(_list_elb_sync, region)
     except Exception as e:  # noqa: BLE001
@@ -503,13 +614,14 @@ async def get_full_inventory(*, region=None):
     Errors per category are isolated — one disabled service doesn't blank the rest.
     """
     (
-        ec2, ebs, eip, nat, dynamodb, elasticache, cloudfront, sns, sqs,
+        ec2, ebs, eip, nat, sg, dynamodb, elasticache, cloudfront, sns, sqs,
         rds, lambdas, ecs, eks, ecr, s3, elb,
     ) = await asyncio.gather(
         list_ec2_instances_for_inventory(region=region),
         list_ebs_volumes(region=region),
         list_elastic_ips(region=region),
         list_nat_gateways(region=region),
+        list_security_groups(region=region),
         list_dynamodb_tables(region=region),
         list_elasticache_clusters(region=region),
         list_cloudfront_distributions(),
@@ -524,7 +636,7 @@ async def get_full_inventory(*, region=None):
         list_load_balancers(region=region),
     )
     by_category = {
-        "ec2": ec2, "ebs": ebs, "eip": eip, "nat": nat, "dynamodb": dynamodb,
+        "ec2": ec2, "ebs": ebs, "eip": eip, "nat": nat, "sg": sg, "dynamodb": dynamodb,
         "elasticache": elasticache, "cloudfront": cloudfront, "sns": sns, "sqs": sqs,
         "rds": rds, "lambda": lambdas, "ecs": ecs, "eks": eks, "ecr": ecr, "s3": s3, "elb": elb,
     }

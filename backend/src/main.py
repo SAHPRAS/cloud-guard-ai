@@ -10,9 +10,9 @@ from fastapi.responses import JSONResponse
 load_dotenv()  # must run before the agent/tool imports below read os.environ at module load
 
 from .agents.anomaly_detector import run_anomaly_detector
+from .agents.assistant import run_assistant
 from .agents.cost_analyst import run_cost_analyst
 from .agents.forecasting import run_forecasting
-from .agents.orchestrator import classify_intent
 from .agents.rightsizing import run_rightsizing
 from .agents.security import run_security
 from .tools.athena_cur_tools import get_cur_cost_by_service
@@ -149,8 +149,9 @@ async def scan(request: Request):
 @app.post("/api/query")
 async def query(request: Request):
     """
-    Chat: orchestrator routes to the right agent.
-    body: { query }
+    Chat: one multi-tool agent that can call any cost/security/usage tool itself
+    to answer cross-domain questions, instead of being routed to a single specialist.
+    body: { query, month, region }
     """
     body = await request.json() if await request.body() else {}
     user_query = body.get("query")
@@ -158,22 +159,8 @@ async def query(request: Request):
     region = body.get("region", "eu-central-1")
 
     try:
-        intent = await classify_intent(user_query)
-        if intent == "anomaly":
-            result = await run_anomaly_detector(region=region)
-        elif intent == "rightsizing":
-            result = await run_rightsizing(month=month, region=region)
-        elif intent == "forecast":
-            if is_past_month(month):
-                result = {"summary": f"{month} has already ended — forecasts are only available for the current or future months."}
-            else:
-                result = await run_forecasting(month=month, region=region)
-        elif intent == "security":
-            result = await run_security()
-        else:
-            result = await run_cost_analyst(month=month, region=region)
-
-        return JSONResponse({"intent": intent, **result})
+        result = await run_assistant(query=user_query, month=month, region=region)
+        return JSONResponse(result)
     except Exception as err:  # noqa: BLE001
         return JSONResponse({"error": str(err)}, status_code=500)
 

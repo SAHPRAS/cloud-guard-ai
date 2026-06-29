@@ -1,15 +1,42 @@
 import json
 
-from ..bedrock.bedrock_client import invoke_claude
-from ..tools.cost_explorer_tools import get_monthly_trend
+from ..bedrock.bedrock_client import run_agent_loop
+from ..tools.cost_explorer_tools import get_cost_by_service, get_monthly_trend
 
 SYSTEM = """You are the Anomaly Detector agent.
 Given a monthly cost series, identify months where spend deviates sharply from the trend.
-Return concise findings: what spiked, by how much, and the likely cause."""
+A statistical pass has already flagged candidate months by % change — use the
+get_cost_by_service tool on a flagged month to find which specific service actually drove
+the spike before explaining it. Don't guess the cause from the aggregate trend alone.
+For each flagged spike, end with a "Suggestions:" section giving one concrete action to
+investigate the root cause or prevent recurrence (e.g. a budget alarm, tagging gap to fix,
+a specific service to audit)."""
+
+TOOLS = [
+    {
+        "name": "get_cost_by_service",
+        "description": "Get AWS cost broken down by service for a given month and region.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "month": {"type": "string", "description": "Month like '2026-06'"},
+                "region": {"type": "string", "description": "AWS region, e.g. eu-central-1"},
+            },
+            "required": ["month"],
+        },
+    },
+]
+
+
+async def _tool_runner(name, input_):
+    if name == "get_cost_by_service":
+        params = input_ or {}
+        return await get_cost_by_service(month=params.get("month"), region=params.get("region"))
+    return {"error": "unknown tool"}
 
 
 async def run_anomaly_detector(*, region=None):
-    """Simple statistical pass + Claude narration."""
+    """Statistical pass (Python) flags candidate spikes; Claude investigates + narrates."""
     trend = await get_monthly_trend(months=12, region=region)
 
     # z-score style flagging on month-over-month change
@@ -29,21 +56,16 @@ async def run_anomaly_detector(*, region=None):
                     }
                 )
 
-    res = await invoke_claude(
+    result = await run_agent_loop(
         system=SYSTEM,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    f"Monthly trend: {json.dumps(trend)}. "
-                    f"Flagged: {json.dumps(findings)}. Explain each spike briefly."
-                ),
-            }
-        ],
-        max_tokens=600,
+        user_message=(
+            f"Region: {region}. Monthly trend: {json.dumps(trend)}. "
+            f"Flagged: {json.dumps(findings)}. For each flagged month, call the tool to break "
+            "it down by service, explain what actually drove the spike, and give a concrete "
+            "suggestion to investigate or prevent it."
+        ),
+        tools=TOOLS,
+        tool_runner=_tool_runner,
     )
 
-    content = res.get("content") or []
-    summary = next((b["text"] for b in content if b.get("type") == "text"), "")
-
-    return {"summary": summary, "findings": findings, "trend": trend}
+    return {"summary": result["text"], "findings": findings, "trend": trend, "trace": result["trace"]}

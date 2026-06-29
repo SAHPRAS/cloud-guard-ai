@@ -54,11 +54,14 @@ async def run_agent_loop(
     """Agentic loop: lets Claude call tools until it produces a final answer.
 
     `tool_runner(name, input)` must return the tool result (any JSON-serialisable).
+    Returns `trace`: the ordered list of tool calls Claude made to get there —
+    this is what lets the UI show the agent's reasoning, not just its final text.
     """
     model = model or MODELS["SONNET"]
     messages = [{"role": "user", "content": user_message}]
+    trace = []
 
-    for _ in range(max_turns):
+    for turn in range(max_turns):
         response = await invoke_claude(
             model=model, system=system, messages=messages, tools=tools
         )
@@ -69,7 +72,7 @@ async def run_agent_loop(
         if not tool_uses:
             # No tool calls — return the final text answer.
             text = "\n".join(b["text"] for b in content if b.get("type") == "text")
-            return {"text": text, "raw": response}
+            return {"text": text, "raw": response, "trace": trace}
 
         # Record the assistant turn, then run every requested tool.
         messages.append({"role": "assistant", "content": content})
@@ -80,6 +83,7 @@ async def run_agent_loop(
                 result = await tool_runner(tu["name"], tu.get("input"))
             except Exception as err:  # noqa: BLE001
                 result = {"error": str(err)}
+            trace.append({"turn": turn, "tool": tu["name"], "input": tu.get("input"), "output": result})
             tool_results.append(
                 {
                     "type": "tool_result",
@@ -89,4 +93,4 @@ async def run_agent_loop(
             )
         messages.append({"role": "user", "content": tool_results})
 
-    return {"text": "Agent stopped after max turns.", "raw": None}
+    return {"text": "Agent stopped after max turns.", "raw": None, "trace": trace}

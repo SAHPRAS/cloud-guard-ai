@@ -8,7 +8,6 @@ const REGIONS = [
 ];
 
 const AGENTS = [
-  { id: "orchestrator", label: "orchestrator" },
   { id: "cost", label: "cost_analyst" },
   { id: "anomaly", label: "anomaly_det" },
   { id: "rightsizing", label: "rightsizing" },
@@ -61,6 +60,9 @@ export default function RadarConsole() {
   const [feed, setFeed] = useState([]);
   const [agentState, setAgentState] = useState({});
   const [result, setResult] = useState(null);
+  const [chatInput, setChatInput] = useState("");
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatLoading, setChatLoading] = useState(false);
 
   const month = months[monthIdx];
   const future = month.future;
@@ -166,6 +168,10 @@ export default function RadarConsole() {
         const block = data.blocks[k];
         if (block.error) pushFeed("warn", `${k}: ${block.error}`);
         else pushFeed("ok", `${k} complete`);
+        (block.trace || []).forEach((t) => {
+          const args = Object.keys(t.input || {}).join(", ");
+          pushFeed("ai", `${k}: called ${t.tool}(${args})`);
+        });
       });
       setResult(data);
       pushFeed(future ? "fc" : "ok", future ? "Projection ready" : "Sweep complete");
@@ -177,7 +183,31 @@ export default function RadarConsole() {
     }
   }
 
-  const feedIcon = { info: "ti-chevron-right", ok: "ti-circle-check", warn: "ti-alert-triangle", crit: "ti-alert-octagon", fc: "ti-chart-dots" };
+  const feedIcon = { info: "ti-chevron-right", ok: "ti-circle-check", warn: "ti-alert-triangle", crit: "ti-alert-octagon", fc: "ti-chart-dots", ai: "ti-cpu" };
+
+  async function sendChat() {
+    const q = chatInput.trim();
+    if (!q || chatLoading) return;
+    setChatMessages((m) => [...m, { role: "user", text: q }]);
+    setChatInput("");
+    setChatLoading(true);
+    try {
+      const res = await fetch("/api/query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: q, month: month.iso, region }),
+      });
+      const data = await res.json();
+      setChatMessages((m) => [
+        ...m,
+        { role: "ai", text: data.summary || data.error || "(no response)", trace: data.trace },
+      ]);
+    } catch (e) {
+      setChatMessages((m) => [...m, { role: "ai", text: `Error: ${e.message}` }]);
+    } finally {
+      setChatLoading(false);
+    }
+  }
 
   return (
     <div className={`console ${future ? "fc-mode" : ""}`}>
@@ -266,13 +296,68 @@ export default function RadarConsole() {
               <div key={k} className="rep-block">
                 <div className="rep-title"><i className="ti ti-file-text" /> {k} — analysis</div>
                 <div className="rep-summary">{v.summary}</div>
+                {renderTrace(v.trace)}
               </div>
             ) : null
           ))}
         </div>
       )}
+
+      <div className="chat-panel">
+        <div className="rep-title"><i className="ti ti-message-circle" /> Ask Cloud Guard AI</div>
+        <div className="chat-messages">
+          {chatMessages.map((m, i) => (
+            <div key={i} className={`chat-msg ${m.role}`}>
+              <div className="chat-msg-text">{m.text}</div>
+              {m.role === "ai" && renderTrace(m.trace)}
+            </div>
+          ))}
+          {chatLoading && <div className="chat-msg ai chat-loading">thinking…</div>}
+        </div>
+        <div className="chat-input-row">
+          <input
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && sendChat()}
+            placeholder="e.g. why did my bill go up and is anything insecure?"
+            disabled={chatLoading}
+          />
+          <button onClick={sendChat} disabled={chatLoading}><i className="ti ti-send" /></button>
+        </div>
+      </div>
     </div>
   );
+}
+
+// Collapsible "AI reasoning" panel — shows the actual tool calls an agent made.
+function renderTrace(trace) {
+  if (!trace || trace.length === 0) return null;
+  return (
+    <details className="ai-trace">
+      <summary>AI reasoning ({trace.length} step{trace.length !== 1 ? "s" : ""})</summary>
+      <ol className="ai-trace-list">
+        {trace.map((t, i) => (
+          <li key={i}>
+            <span className="trace-tool">{t.tool}</span>
+            <span className="trace-input">({Object.entries(t.input || {}).map(([k, v]) => `${k}=${v}`).join(", ")})</span>
+            <span className="trace-arrow">→</span>
+            <span className="trace-output">{summarizeOutput(t.output)}</span>
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+}
+
+function summarizeOutput(output) {
+  if (output == null) return "—";
+  if (Array.isArray(output)) return `${output.length} item(s)`;
+  if (typeof output === "object") {
+    if (output.error) return `error: ${output.error}`;
+    const s = JSON.stringify(output);
+    return s.length > 140 ? s.slice(0, 140) + "…" : s;
+  }
+  return String(output);
 }
 
 // Renders the per-service cost (historical) or per-service forecast (future) table.

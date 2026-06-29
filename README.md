@@ -31,18 +31,14 @@ EC2 (t3.large, eu-central-1)
 
 Plain-language summary of everything added on top of the original MVP, newest first:
 
-- **UI re-themed to neon blue, with dark red for problems.** The whole console (titles,
-  buttons, the radar, charts) is neon blue by default. Anything red means "this needs your
-  attention." If a scan finds even one high-severity issue anywhere, the **entire UI flips to a
-  red alert theme** — you can't miss it, even from across the room.
 - **Stop button.** A scan can now be cancelled mid-flight instead of having to wait it out.
 - **Cost numbers no longer change when you switch region.** Billing is account-wide in AWS —
   there's no such thing as "the bill for us-east-1" — so the Cost/Anomaly/Forecast numbers now
   always show the full account total. The region picker still correctly filters things that
   *are* regional, like EC2 instances and security groups.
-- **Color-coded severity everywhere.** Every resource and every finding now has a severity —
-  red (high), amber (medium), or normal blue. Red rows always come with a Claude-written fix
-  suggestion; nothing red is ever left unexplained.
+- **Severity on every resource and finding.** Every resource and every finding now carries a
+  high/medium/low severity, and every high-severity one always comes with a Claude-written fix
+  — nothing critical is ever left unexplained.
 - **"Claude Bedrock" labels.** Every piece of text that came from the AI (not just raw AWS
   data) is now visibly tagged "Claude Bedrock" in the UI, so you always know what's a fact from
   AWS vs. an AI's interpretation of that fact.
@@ -52,7 +48,7 @@ Plain-language summary of everything added on top of the original MVP, newest fi
   the full list below.
 - **Security Groups are now audited.** Every firewall rule is checked for whether it's open to
   the whole internet, and whether it exposes something sensitive (SSH, RDP, a database port).
-  Risky rules are flagged red with a specific suggested fix.
+  Risky rules are flagged high-severity with a specific suggested fix.
 - **Stopped EC2 instances and all load balancer types are now included** — previously the
   inventory only showed *running* EC2 instances and modern load balancers, missing stopped
   servers (which still cost money for their attached storage) and older "Classic" load
@@ -95,6 +91,57 @@ of having to parse free text.
 
 ---
 
+## Claude Bedrock AI features
+
+Every piece of judgment in this app — every "why," every "is this risky," every suggested fix —
+comes from a real call to Claude on AWS Bedrock, grounded in real AWS data pulled moments
+before. Nothing is templated or hardcoded. Here's everywhere Claude is actually used:
+
+1. **Cost Analyst** — explains the cost breakdown and gives 2-3 concrete cost-optimization
+   suggestions tied to the actual top-spending services.
+2. **Anomaly Detector** — judges which months are genuine spend anomalies (a fixed % threshold
+   is only a hint, not the verdict), investigates the actual driver service behind each one, and
+   gives a fix per anomaly.
+3. **Rightsizing** — checks real EC2 CPU utilization before recommending a smaller instance
+   size, with an estimated monthly saving — never guesses from spend alone.
+4. **Forecasting** — reasons over 24 months of trend data per service and submits its own
+   structured projection (not a copied growth-model number), with a confidence score and the
+   top driver services.
+5. **Security** — prioritizes SecurityHub/GuardDuty findings (public buckets, IAM wildcards,
+   open security groups, GuardDuty alerts) and writes a remediation per finding.
+6. **Resource Auditor** — reviews a full 17-category resource inventory (including every
+   security group's firewall rules and every ECR image's vulnerability scan) and writes a
+   concrete fix for every high-severity issue found — none get skipped.
+7. **Synthesizer** — one more Claude call, at the end of every scan, reads every other agent's
+   *structured* results together and finds cross-cutting insights a single agent would miss
+   (e.g. a cost spike that lines up with a security finding), producing a ranked "Executive
+   analysis."
+
+**How the AI integration is engineered (not just "call the API"):**
+- **Structured output, not free text.** Forecasting, Anomaly Detection, the Resource Auditor,
+  and the Synthesizer all force Claude through a tool-call (`submit_forecast`,
+  `submit_anomalies`, `submit_findings`, `submit_synthesis`) so it returns a structured JSON
+  object instead of prose — the UI never has to parse free text to find a number.
+- **Agentic tool-use loop.** Each agent hands Claude a set of real AWS-data tools (e.g.
+  `get_cost_by_service`, `get_ec2_cpu_utilization`, `get_security_hub_findings`) and lets it
+  call them across multiple turns to gather whatever it needs before answering — see
+  `run_agent_loop` in `backend/src/bedrock/bedrock_client.py`.
+- **Deterministic numbers are demoted to cross-checks.** Where a plain calculation used to be
+  the source of truth (the old growth-rate forecast, the 25%-change anomaly threshold), Claude
+  now makes the final call — the old calculation is kept only as a sanity-check reference and a
+  fallback if Claude doesn't return a structured answer.
+- **Grounded, not invented.** Every agent's system prompt explicitly instructs Claude never to
+  invent a number, CVE, or finding that isn't in the data it was actually given.
+- **Model routing.** Claude Sonnet handles all analysis; Claude Haiku is the cheap option for
+  simple routing; Claude Opus is available for deeper reasoning if you need it.
+- **Prompt caching.** System prompts can be cached for up to ~90% input-token savings on
+  repeated scans.
+- **Labeled in the UI.** Every block of Claude-generated text is visibly marked "Claude
+  Bedrock" so it's always clear what's a fact straight from AWS vs. Claude's interpretation of
+  that fact.
+
+---
+
 ## How a scan flows through the system (plain-language version)
 
 ```
@@ -129,10 +176,10 @@ of having to parse free text.
  FRONTEND renders the results:
    - tables of raw AWS facts → no "Claude Bedrock" tag
    - Claude's analysis & fix suggestions → tagged "Claude Bedrock"
-   - severity coloring: neon blue = fine, amber = medium issue,
-     dark red = high-severity issue (always paired with a fix)
-   - if ANYTHING is high-severity anywhere → the whole UI flips
-     to the red "alert mode" theme so it's impossible to miss
+   - every resource/finding is highlighted by severity (high/medium/low),
+     and every high-severity one is always paired with a fix
+   - if ANYTHING is high-severity anywhere → the whole UI switches into
+     an "alert mode" theme so it's impossible to miss
 ```
 
 In short: **AWS gives the facts, Claude gives the judgment**, and the UI always makes clear
@@ -347,10 +394,10 @@ deterministic compound-growth projection (`forecastByService`) and AWS's native
 is handed the 24-month trend, each service's growth model, and the AWS ML number, then
 reasons about which services will accelerate/taper and calls a `submit_forecast` tool
 with its own per-service projection, range and confidence. The UI charts the trailing
-actuals against the projected month (with a low–high band) and renders a PROJECTED
-TOTAL row (amber = forecast, distinct from the neon-blue live theme). If the agent doesn't return a structured forecast (e.g. it
-hits the turn limit), the deterministic growth-model number is used as a fallback so the
-UI never shows nothing.
+actuals against the projected month (with a low–high band) and renders a PROJECTED TOTAL row,
+visually distinct from the historical cost table. If the agent doesn't return a structured
+forecast (e.g. it hits the turn limit), the deterministic growth-model number is used as a
+fallback so the UI never shows nothing.
 
 **Resource inventory (current/historical months) is also AI-reviewed:** `get_full_inventory`
 gathers every resource type the IAM role can see, in parallel, each category isolated so one
@@ -374,8 +421,8 @@ disabled service doesn't blank the rest:
 
 Every resource carries a real status string from its AWS API (EC2 `running`/`stopped`, EBS
 `in-use`/`available`, security groups `restricted`/`open-to-internet`, etc.) plus a computed
-`severity` (`high`/`medium`/`low`/none) that the UI uses to highlight rows — high-severity rows
-get a red tint, medium an amber tint. Those flags/severities are only a starting point handed
+`severity` (`high`/`medium`/`low`/none) that the UI uses to highlight rows by how urgent they
+are. Those flags/severities are only a starting point handed
 to Claude alongside the *entire* inventory (every category, not just the flagged resources);
 the Resource Auditor agent calls `submit_findings` with its own judged list of concrete fixes
 (e.g. "remove the 0.0.0.0/0:22 ingress rule, use SSM Session Manager instead" for an open

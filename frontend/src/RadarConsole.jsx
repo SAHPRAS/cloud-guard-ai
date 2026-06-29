@@ -106,9 +106,9 @@ export default function RadarConsole() {
     let raf;
     const tick = () => {
       const a = animRef.current;
-      const col = critical ? "255,95,86" : future ? "133,183,235" : "61,220,132";
+      const col = critical ? "227,85,85" : future ? "255,189,46" : "0,212,255";
       ctx.clearRect(0, 0, W, H);
-      ctx.fillStyle = "#06120e"; ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = "#051119"; ctx.fillRect(0, 0, W, H);
       ctx.strokeStyle = `rgba(${col},0.18)`; ctx.lineWidth = 1;
       for (let i = 1; i <= 4; i++) { ctx.beginPath(); ctx.arc(cx, cy, (R * i) / 4, 0, Math.PI * 2); ctx.stroke(); }
       ctx.beginPath(); ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy); ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R); ctx.stroke();
@@ -124,14 +124,14 @@ export default function RadarConsole() {
         const diff = Math.abs(((a.angle - b.a) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2));
         if (a.scanning && diff < 0.09) b.lit = 1;
         if (b.lit > 0.02) {
-          const c = b.type === "crit" || critical ? "#ff5f56" : b.type === "warn" ? "#ffbd2e" : future ? "#85b7eb" : "#3ddc84";
+          const c = b.type === "crit" || critical ? "#e35555" : b.type === "warn" ? "#ffbd2e" : future ? "#ffbd2e" : "#00d4ff";
           ctx.globalAlpha = b.lit; ctx.fillStyle = c; ctx.shadowColor = c; ctx.shadowBlur = 10;
           ctx.beginPath(); ctx.arc(bx, by, 3, 0, Math.PI * 2); ctx.fill();
           ctx.shadowBlur = 0; ctx.globalAlpha = b.lit * 0.85; ctx.font = "8px monospace"; ctx.fillStyle = c;
           ctx.fillText(b.label, bx + 6, by + 3); ctx.globalAlpha = 1; b.lit *= 0.974;
         }
       });
-      const cc = critical ? "#ff5f56" : future ? "#85b7eb" : "#3ddc84";
+      const cc = critical ? "#e35555" : future ? "#ffbd2e" : "#00d4ff";
       ctx.fillStyle = cc; ctx.shadowColor = cc; ctx.shadowBlur = 8;
       ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0;
       if (a.scanning) a.angle += 0.024;
@@ -555,7 +555,7 @@ function renderCostTable(result) {
   const comparison = !future ? result.blocks?.cost?.comparison : null;
   const hasBreakdown = !future && rows.length > 0 && rows[0].usageCost !== undefined;
   const max = Math.max(...rows.map((r) => r.amount), 1);
-  const barColor = future ? "#85b7eb" : "#3ddc84";
+  const barColor = future ? "#ffbd2e" : "#00d4ff";
   const fmt = (n) => `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   return (

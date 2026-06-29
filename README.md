@@ -25,6 +25,56 @@ EC2 (t3.large, eu-central-1)
          ↑ EC2 instance role (no keys, auto-refreshed via IMDS)
 ```
 
+---
+
+## What's new (changelog)
+
+Plain-language summary of everything added on top of the original MVP, newest first:
+
+- **UI re-themed to neon blue, with dark red for problems.** The whole console (titles,
+  buttons, the radar, charts) is neon blue by default. Anything red means "this needs your
+  attention." If a scan finds even one high-severity issue anywhere, the **entire UI flips to a
+  red alert theme** — you can't miss it, even from across the room.
+- **Stop button.** A scan can now be cancelled mid-flight instead of having to wait it out.
+- **Cost numbers no longer change when you switch region.** Billing is account-wide in AWS —
+  there's no such thing as "the bill for us-east-1" — so the Cost/Anomaly/Forecast numbers now
+  always show the full account total. The region picker still correctly filters things that
+  *are* regional, like EC2 instances and security groups.
+- **Color-coded severity everywhere.** Every resource and every finding now has a severity —
+  red (high), amber (medium), or normal blue. Red rows always come with a Claude-written fix
+  suggestion; nothing red is ever left unexplained.
+- **"Claude Bedrock" labels.** Every piece of text that came from the AI (not just raw AWS
+  data) is now visibly tagged "Claude Bedrock" in the UI, so you always know what's a fact from
+  AWS vs. an AI's interpretation of that fact.
+- **Resource Auditor agent (new) — lists everything running in the account.** One new agent
+  inventories 17 kinds of resources (servers, storage, databases, networking, containers,
+  container images, messaging) and Claude reviews the whole list for problems and fixes. See
+  the full list below.
+- **Security Groups are now audited.** Every firewall rule is checked for whether it's open to
+  the whole internet, and whether it exposes something sensitive (SSH, RDP, a database port).
+  Risky rules are flagged red with a specific suggested fix.
+- **Stopped EC2 instances and all load balancer types are now included** — previously the
+  inventory only showed *running* EC2 instances and modern load balancers, missing stopped
+  servers (which still cost money for their attached storage) and older "Classic" load
+  balancers.
+- **Forecasting is now done by Claude, not a spreadsheet formula.** Previously, future-month
+  cost predictions came from a simple compound-growth calculation, and Claude only wrote a
+  summary of it. Now Claude looks at the actual trend data itself and produces its own
+  prediction — the old calculation is kept only as a sanity-check reference. The forecast also
+  now has a proper chart (trend line + projected point with a range band) instead of just a
+  table of numbers.
+- **Anomaly detection is now judged by Claude, not a fixed percentage rule.** Previously, any
+  month with >25% cost increase was automatically flagged. Now that 25% rule is just a hint —
+  Claude looks at the actual shape of the data and decides what's a real problem versus normal
+  seasonal change, and always gives a concrete fix.
+- **Synthesizer agent (new) — connects the dots across every other agent.** After all the
+  agents you selected finish, one more Claude call reads everyone's results together and looks
+  for things a single agent would miss — like a cost spike that lines up with a security
+  problem. It produces a short "Executive analysis" with a ranked to-do list, shown at the top
+  of every scan.
+- **Removed the chat window.** The free-form "ask a question" chat box was removed in favor of
+  the structured per-agent results above.
+
 ## The 7 agents
 Every agent's "Suggestions" come from Claude reasoning over real tool data — none are
 template/hardcoded text. Where an agent used to lean on a deterministic calculation (forecast
@@ -42,6 +92,51 @@ of having to parse free text.
 | Security | SecurityHub + GuardDuty findings | Claude Sonnet |
 | Resource Auditor | Inventories EC2/EBS/EIP/NAT/Security Groups/DynamoDB/ElastiCache/CloudFront/SNS/SQS/RDS/Lambda/ECS/EKS/ECR (+ image vuln scans)/S3/ELB currently running, Claude reviews the lot for concrete fixes — current/historical months only | Claude Sonnet |
 | Synthesizer | Reads every other agent's structured output from the same scan and surfaces cross-cutting insights + a ranked priority list | Claude Sonnet |
+
+---
+
+## How a scan flows through the system (plain-language version)
+
+```
+ YOU (browser)
+   │  pick a month + region + scan target, click INITIATE
+   ▼
+ FRONTEND (React radar UI)
+   │  sends one request: "scan this month/region for this target"
+   ▼
+ BACKEND (FastAPI)
+   │  fans out to whichever agents you asked for, all at once
+   ▼
+ ┌────────────────────────────────────────────────────────────┐
+ │  Cost Analyst · Anomaly Detector · Rightsizing             │
+ │  Forecasting  · Security         · Resource Auditor        │
+ └────────────────────────────────────────────────────────────┘
+   │  EACH agent, independently:
+   │    1. calls the real AWS APIs for its own data
+   │       (Cost Explorer, EC2, Security Hub, ECR scans, etc.)
+   │    2. hands that real data to Claude on Bedrock
+   │    3. Claude reasons about it and returns a verdict +
+   │       a concrete suggestion (never a canned/generic tip)
+   ▼
+ SYNTHESIZER (one more Claude Bedrock call)
+   │  reads every agent's results together (not just their text,
+   │  the actual structured numbers) and looks for connections a
+   │  single agent can't see — e.g. "this cost spike lines up
+   │  with that security finding"
+   ▼
+ BACKEND bundles everything into one response
+   ▼
+ FRONTEND renders the results:
+   - tables of raw AWS facts → no "Claude Bedrock" tag
+   - Claude's analysis & fix suggestions → tagged "Claude Bedrock"
+   - severity coloring: neon blue = fine, amber = medium issue,
+     dark red = high-severity issue (always paired with a fix)
+   - if ANYTHING is high-severity anywhere → the whole UI flips
+     to the red "alert mode" theme so it's impossible to miss
+```
+
+In short: **AWS gives the facts, Claude gives the judgment**, and the UI always makes clear
+which is which.
 
 ---
 
@@ -253,7 +348,7 @@ is handed the 24-month trend, each service's growth model, and the AWS ML number
 reasons about which services will accelerate/taper and calls a `submit_forecast` tool
 with its own per-service projection, range and confidence. The UI charts the trailing
 actuals against the projected month (with a low–high band) and renders a PROJECTED
-TOTAL row (blue = forecast). If the agent doesn't return a structured forecast (e.g. it
+TOTAL row (amber = forecast, distinct from the neon-blue live theme). If the agent doesn't return a structured forecast (e.g. it
 hits the turn limit), the deterministic growth-model number is used as a fallback so the
 UI never shows nothing.
 
@@ -331,7 +426,7 @@ cloud-guard-ai/
 │       ├── main.py                       # /api/identity /api/scan (FastAPI)
 │       ├── bedrock/bedrock_client.py     # invoke_claude + tool-use loop
 │       ├── agents/                       # 6 specialists + synthesizer
-│       └── tools/                        # cost_explorer (per-service + forecast), athena_cur (exact bill match), security, sts, resource_inventory (RDS/Lambda/ECS/EKS/ECR/S3/ELB)
+│       └── tools/                        # cost_explorer (per-service + forecast), athena_cur (exact bill match), security, sts, resource_inventory (17 categories — see the agents table above), ec2, cloudwatch
 ├── frontend/
 │   ├── Dockerfile
 │   ├── nginx.conf

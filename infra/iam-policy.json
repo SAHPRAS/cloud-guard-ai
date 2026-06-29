@@ -62,6 +62,34 @@
       "Resource": "*"
     },
     {
+      "Sid": "ResourceInventoryRead",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeVolumes",
+        "ec2:DescribeAddresses",
+        "ec2:DescribeNatGateways",
+        "dynamodb:ListTables",
+        "dynamodb:DescribeTable",
+        "elasticache:DescribeCacheClusters",
+        "cloudfront:ListDistributions",
+        "sns:ListTopics",
+        "sqs:ListQueues",
+        "rds:DescribeDBInstances",
+        "lambda:ListFunctions",
+        "ecs:ListClusters",
+        "ecs:ListServices",
+        "ecs:DescribeServices",
+        "ecr:DescribeRepositories",
+        "ecr:DescribeImages",
+        "ecr:DescribeImageScanFindings",
+        "s3:ListAllMyBuckets",
+        "s3:GetBucketPublicAccessBlock",
+        "s3:GetEncryptionConfiguration",
+        "elasticloadbalancing:DescribeLoadBalancers"
+      ],
+      "Resource": "*"
+    },
+    {
       "Sid": "AthenaQueryExecution",
       "Effect": "Allow",
       "Action": [

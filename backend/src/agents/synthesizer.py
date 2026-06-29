@@ -73,6 +73,9 @@ def _block_digest(key, block):
     elif key == "security":
         digest["counts"] = block.get("counts")
         digest["findings"] = (block.get("findings") or [])[:10]
+    elif key == "resources":
+        digest["counts"] = block.get("counts")
+        digest["findings"] = (block.get("findings") or [])[:10]
     return digest
 
 

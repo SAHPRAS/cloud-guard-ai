@@ -110,6 +110,16 @@ body { background: #020806; font-family: "JetBrains Mono", ui-monospace, SFMono-
 .syn-pri-title { font-size: 11.5px; color: #cdeedd; font-weight: 600; }
 .syn-pri-detail { font-size: 10.5px; color: #7de8b4; margin-top: 2px; line-height: 1.5; }
 
+/* Resource inventory table */
+.res-count-badge { margin-left: auto; font-size: 9px; color: #1f8a5c; letter-spacing: 0.5px; text-transform: none; }
+.res-table { margin-bottom: 10px; }
+.res-table th:first-child { width: 50%; }
+.res-detail { font-size: 9.5px; color: #5bbf8c; margin-top: 2px; }
+.res-row-flagged .ct-amt { color: #ffbd2e; }
+.res-row-flagged td { background: rgba(255, 189, 46, 0.04); }
+.res-errors { margin-top: 6px; }
+.res-error-line { font-size: 9.5px; color: #3a5448; }
+
 /* Forecast trend → projection chart */
 .forecast-chart { width: 100%; height: auto; }
 .fc-grid { stroke: #103326; stroke-width: 1; }

@@ -13,6 +13,7 @@ const AGENTS = [
   { id: "rightsizing", label: "rightsizing" },
   { id: "forecast", label: "forecasting" },
   { id: "security", label: "security" },
+  { id: "resources", label: "resource_aud" },
 ];
 
 const TARGETS = [
@@ -22,6 +23,7 @@ const TARGETS = [
   { id: "rightsizing", label: "Rightsizing", icon: "ti-resize" },
   { id: "forecast", label: "Forecast", icon: "ti-chart-line" },
   { id: "security", label: "Security", icon: "ti-lock" },
+  { id: "resources", label: "Resources", icon: "ti-stack-2" },
 ];
 
 // build month list: 24 months of history .. 6 months of forecast horizon, anchored on today's real month
@@ -68,9 +70,10 @@ export default function RadarConsole() {
   const canvasRef = useRef(null);
   const animRef = useRef({ angle: 0, blips: [], scanning: false });
 
-  // forecasting a closed month is meaningless — fall back if the user picks one while forecast is selected
+  // forecasting a closed month / inventorying a future month are both meaningless — fall back
   useEffect(() => {
     if (target === "forecast" && isPast) setTarget("full");
+    if (target === "resources" && future) setTarget("full");
   }, [monthIdx]);
 
   // ----- identity bar -----
@@ -212,12 +215,19 @@ export default function RadarConsole() {
         <div className="scanmenu">
           <div className="sm-h">Scan target</div>
           {TARGETS.map((t) => {
-            const blocked = t.id === "forecast" && isPast;
+            const blocked =
+              (t.id === "forecast" && isPast) || (t.id === "resources" && future);
+            const blockedReason =
+              t.id === "forecast" && isPast
+                ? `${month.label} has already ended — forecast isn't available for past months`
+                : t.id === "resources" && future
+                ? "Resource inventory shows what's running now — not available for future months"
+                : undefined;
             return (
               <div
                 key={t.id}
                 className={`sm-item ${t.full ? "full" : ""} ${target === t.id ? "on" : ""} ${blocked ? "disabled" : ""}`}
-                title={blocked ? `${month.label} has already ended — forecast isn't available for past months` : undefined}
+                title={blockedReason}
                 onClick={() => !scanning && !blocked && setTarget(t.id)}
               >
                 <i className={`ti ${t.icon}`} /> {t.label}
@@ -266,47 +276,116 @@ export default function RadarConsole() {
           {renderSynthesis(result.synthesis)}
           {renderCostTable(result)}
           {result.mode === "forecast" && <ForecastChart forecast={result.blocks?.forecast} />}
-          {Object.entries(result.blocks || {}).map(([k, v]) => (
-            v.summary ? (
+          {renderResourceBlock(result.blocks?.resources)}
+          {Object.entries(result.blocks || {}).map(([k, v]) => {
+            if (k === "resources") return null; // rendered above via renderResourceBlock
+            return v.summary ? (
               <div key={k} className="rep-block">
                 <div className="rep-title"><i className="ti ti-file-text" /> {k} — analysis</div>
                 <div className="rep-summary">{v.summary}</div>
+                {k === "anomaly" && renderAnomalyFindings(v)}
                 {renderTrace(v.trace)}
               </div>
-            ) : null
-          ))}
+            ) : null;
+          })}
         </div>
       )}
     </div>
   );
 }
 
+// Shared ranked list for any agent's {title, category, impact, detail} findings —
+// every agent's Claude-generated suggestions render through this one component.
+function renderPriorityList(items) {
+  if (!items || items.length === 0) return null;
+  const impactRank = { high: 0, medium: 1, low: 2 };
+  const sorted = [...items].sort((a, b) => (impactRank[a.impact] ?? 3) - (impactRank[b.impact] ?? 3));
+  return (
+    <ol className="syn-priorities">
+      {sorted.map((p, i) => (
+        <li key={i} className={`syn-pri syn-pri-${p.impact}`}>
+          <span className={`syn-impact syn-impact-${p.impact}`}>{p.impact}</span>
+          <span className="syn-cat">{p.category}</span>
+          <div className="syn-pri-body">
+            <div className="syn-pri-title">{p.title}</div>
+            <div className="syn-pri-detail">{p.detail}</div>
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 // Cross-agent executive analysis — connects findings across cost/security/rightsizing/forecast.
 function renderSynthesis(synthesis) {
   if (!synthesis || (!synthesis.headline && !synthesis.narrative)) return null;
-  const impactRank = { high: 0, medium: 1, low: 2 };
-  const priorities = [...(synthesis.priorities || [])].sort(
-    (a, b) => (impactRank[a.impact] ?? 3) - (impactRank[b.impact] ?? 3)
-  );
   return (
     <div className="rep-block synthesis-block">
       <div className="rep-title"><i className="ti ti-sparkles" /> Executive analysis</div>
       {synthesis.headline && <div className="syn-headline">{synthesis.headline}</div>}
       {synthesis.narrative && <div className="rep-summary">{synthesis.narrative}</div>}
-      {priorities.length > 0 && (
-        <ol className="syn-priorities">
-          {priorities.map((p, i) => (
-            <li key={i} className={`syn-pri syn-pri-${p.impact}`}>
-              <span className={`syn-impact syn-impact-${p.impact}`}>{p.impact}</span>
-              <span className="syn-cat">{p.category}</span>
-              <div className="syn-pri-body">
-                <div className="syn-pri-title">{p.title}</div>
-                <div className="syn-pri-detail">{p.detail}</div>
-              </div>
-            </li>
+      {renderPriorityList(synthesis.priorities)}
+    </div>
+  );
+}
+
+// Anomaly Detector's Claude-judged findings — severity, driver service, fix suggestion.
+function renderAnomalyFindings(block) {
+  const findings = block?.findings;
+  if (!findings || findings.length === 0) return null;
+  const items = findings.map((f) => ({
+    impact: f.severity === "crit" ? "high" : "medium",
+    category: f.driverService || f.month,
+    title: `${f.month}${f.changePct != null ? ` (+${f.changePct}%)` : ""}`,
+    detail: [f.explanation, f.suggestion].filter(Boolean).join(" → ") || "Flagged by heuristic — no AI explanation yet.",
+  }));
+  return renderPriorityList(items);
+}
+
+// Resource Auditor's Claude-generated fixes — one entry per flagged/risky resource.
+function renderResourceBlock(block) {
+  if (!block || (!block.resources?.length && !block.errors)) return null;
+  const findingItems = (block.findings || []).map((f) => ({
+    impact: f.severity,
+    category: f.type,
+    title: f.resource,
+    detail: [f.issue, f.suggestion].filter(Boolean).join(" → "),
+  }));
+  const byType = {};
+  (block.resources || []).forEach((r) => {
+    (byType[r.type] = byType[r.type] || []).push(r);
+  });
+
+  return (
+    <div className="rep-block">
+      <div className="rep-title">
+        <i className="ti ti-stack-2" /> Resource inventory
+        {block.counts && <span className="res-count-badge">{block.counts.total} resources · {block.counts.flagged} flagged</span>}
+      </div>
+      {Object.entries(byType).map(([type, items]) => (
+        <table key={type} className="cost-table res-table">
+          <thead>
+            <tr><th>{type.toUpperCase()}</th><th>Status</th><th style={{ textAlign: "right" }}>Flags</th></tr>
+          </thead>
+          <tbody>
+            {items.map((r) => (
+              <tr key={r.id} className={r.flags?.length ? "res-row-flagged" : ""}>
+                <td className="ct-name">{r.name}<div className="res-detail">{r.detail}</div></td>
+                <td>{r.status}</td>
+                <td className="ct-amt">{(r.flags || []).join(", ") || "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ))}
+      {block.errors && Object.keys(block.errors).length > 0 && (
+        <div className="res-errors">
+          {Object.entries(block.errors).map(([cat, err]) => (
+            <div key={cat} className="res-error-line">{cat}: {err.hint || err.error}</div>
           ))}
-        </ol>
+        </div>
       )}
+      {renderPriorityList(findingItems)}
     </div>
   );
 }

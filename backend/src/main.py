@@ -12,6 +12,7 @@ load_dotenv()  # must run before the agent/tool imports below read os.environ at
 from .agents.anomaly_detector import run_anomaly_detector
 from .agents.cost_analyst import run_cost_analyst
 from .agents.forecasting import run_forecasting
+from .agents.resource_inventory import run_resource_inventory
 from .agents.rightsizing import run_rightsizing
 from .agents.security import run_security
 from .agents.synthesizer import run_synthesis
@@ -82,7 +83,7 @@ async def identity():
 async def scan(request: Request):
     """
     Full or individual scan.
-    body: { target: 'full'|'cost'|'anomaly'|'rightsizing'|'forecast'|'security', month, region }
+    body: { target: 'full'|'cost'|'anomaly'|'rightsizing'|'forecast'|'security'|'resources', month, region }
     """
     body = await request.json() if await request.body() else {}
     target = body.get("target", "full")
@@ -118,6 +119,8 @@ async def scan(request: Request):
             tasks.append(("forecast", run_forecasting(month=month, region=region)))
         if wants("security"):
             tasks.append(("security", run_security()))
+        if wants("resources"):
+            tasks.append(("resources", run_resource_inventory(region=region)))
 
         settled = await asyncio.gather(*(p for _, p in tasks), return_exceptions=True)
         for (key, _), value in zip(tasks, settled):

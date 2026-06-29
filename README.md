@@ -1,29 +1,42 @@
 # Cloud Guard AI
 
-A 6-agent AWS cost & security console with a radar-style UI, powered by **AWS Bedrock (Claude)**.
+A 7-agent AWS cost & security console with a radar-style UI, powered by **AWS Bedrock (Claude)**.
 Pick any month — historical months show **actual cost per service + total**; future months show
 an **AI-reasoned forecast per service + projected total**, charted against trailing actuals.
-Every scan ends with a **Synthesizer** pass that reads every other agent's output in one more
-Bedrock call and surfaces cross-cutting insights (e.g. a cost spike that lines up with a security
-finding) as a ranked priority list. Runs on a single EC2 box via Docker Compose.
+A Resource Auditor inventories every resource the account is currently running across 16
+categories — EC2, EBS, Elastic IPs, NAT Gateways, DynamoDB, ElastiCache, CloudFront, SNS, SQS,
+RDS, Lambda, ECS, EKS, ECR images + vulnerability scan findings, S3, load balancers — and Claude
+reviews the whole inventory for concrete fixes. Every scan ends with a **Synthesizer** pass
+that reads every other agent's
+*structured* output (not just their text) in one more Bedrock call and surfaces cross-cutting
+insights (e.g. a cost spike that lines up with a security finding) as a ranked priority list.
+Runs on a single EC2 box via Docker Compose.
 
 ```
 EC2 (t3.large, eu-central-1)
 └── docker compose
     ├── frontend  (React + nginx)   :80   → proxies /api to backend
-    └── backend   (Python, 6 agents) :3001 → Bedrock + Cost Explorer + Athena (CUR) + Security Hub
+    └── backend   (Python, 7 agents) :3001 → Bedrock + Cost Explorer + Athena (CUR) + Security Hub
          ↑ EC2 instance role (no keys, auto-refreshed via IMDS)
 ```
 
-## The 6 agents
+## The 7 agents
+Every agent's "Suggestions" come from Claude reasoning over real tool data — none are
+template/hardcoded text. Where an agent used to lean on a deterministic calculation (forecast
+growth-rate, anomaly threshold), that calculation is now a cross-check reference only; Claude
+makes the final call via a forced structured tool response (`submit_forecast`,
+`submit_anomalies`, `submit_findings`, `submit_synthesis`) so the UI gets reliable JSON instead
+of having to parse free text.
+
 | Agent | Role | Model |
 |-------|------|-------|
 | Cost Analyst | Per-service spend + total — CUR (Athena) preferred, Cost Explorer fallback | Claude Sonnet |
-| Anomaly Detector | Flags month-over-month spikes | Claude Sonnet |
+| Anomaly Detector | Claude judges which months are genuine anomalies (a % MoM threshold is only a hint), investigates the driver service, gives a fix | Claude Sonnet |
 | Rightsizing | Over-provisioned EC2/EKS/DocDB + savings | Claude Sonnet |
 | Forecasting | Reasons over 24mo trend per service and submits its own structured projection (not just a copied growth-model number) — current/future months only | Claude Sonnet |
 | Security | SecurityHub + GuardDuty findings | Claude Sonnet |
-| Synthesizer | Reads every other agent's output from the same scan and surfaces cross-cutting insights + a ranked priority list | Claude Sonnet |
+| Resource Auditor | Inventories EC2/EBS/EIP/NAT/DynamoDB/ElastiCache/CloudFront/SNS/SQS/RDS/Lambda/ECS/EKS/ECR (+ image vuln scans)/S3/ELB currently running, Claude reviews the lot for concrete fixes — current/historical months only | Claude Sonnet |
+| Synthesizer | Reads every other agent's structured output from the same scan and surfaces cross-cutting insights + a ranked priority list | Claude Sonnet |
 
 ---
 
@@ -96,6 +109,10 @@ aws iam create-instance-profile --instance-profile-name CloudGuardAI-EC2
 aws iam add-role-to-instance-profile \
   --instance-profile-name CloudGuardAI-EC2 --role-name CloudGuardAI-EC2
 ```
+**Already deployed?** `infra/iam-policy.json` gained a `ResourceInventoryRead` statement
+(describe/list-only — EC2 volumes/addresses/NAT, DynamoDB, ElastiCache, CloudFront, SNS, SQS,
+RDS, Lambda, ECS, ECR, S3, ELB) for the Resource Auditor agent. Re-run just the
+`put-role-policy` command above against your existing role to pick it up — it's idempotent.
 
 ### 3. Push this project to GitHub (from your laptop)
 ```bash
@@ -224,6 +241,31 @@ TOTAL row (blue = forecast). If the agent doesn't return a structured forecast (
 hits the turn limit), the deterministic growth-model number is used as a fallback so the
 UI never shows nothing.
 
+**Resource inventory (current/historical months) is also AI-reviewed:** `get_full_inventory`
+gathers every resource type the IAM role can see, in parallel, each category isolated so one
+disabled service doesn't blank the rest:
+- **Compute/network:** EC2 instances, EBS volumes (flags unattached — still billed), Elastic
+  IPs (flags unassociated — still billed), NAT Gateways, load balancers (flags internet-facing)
+- **Data:** RDS (flags publicly-accessible), DynamoDB, ElastiCache
+- **Containers:** ECS (flags desired≠running task count), EKS (flags public API endpoint)
+- **Images:** ECR repos, with the latest pushed image's vulnerability scan severity counts
+- **Storage/edge/messaging:** S3 (flags public-access-block + missing default encryption),
+  CloudFront, SNS, SQS
+
+Those heuristic flags are only a starting point handed to Claude alongside the *entire*
+inventory (every category, not just the flagged resources); the Resource Auditor agent calls
+`submit_findings` with its own judged list of concrete fixes (e.g. "rebuild from a patched
+base image" for a vulnerable ECR image, or "delete this unattached volume" for an idle EBS
+disk), citing real figures from the data — it's told explicitly not to invent a CVE or issue
+the data doesn't support. Not available for future months (there's nothing "currently
+running" to inventory yet).
+
+**Anomaly detection is judged by Claude, not a fixed threshold:** a >25% month-over-month
+change is computed in Python as a hint, but the Anomaly Detector agent decides which flagged
+months are genuine anomalies (vs. normal seasonal variation), can flag a month the heuristic
+missed, calls `get_cost_by_service` to find the actual driver, and submits its verdict via
+`submit_anomalies` — each entry carries a concrete fix suggestion, not just an explanation.
+
 **Synthesizer (every scan):** once the requested agents finish, their structured outputs
 (not just their text summaries) are handed to one more Bedrock call whose only job is to
 find connections a single-domain agent can't see — e.g. a cost spike that lines up with a
@@ -250,8 +292,8 @@ cloud-guard-ai/
 │   └── src/
 │       ├── main.py                       # /api/identity /api/scan (FastAPI)
 │       ├── bedrock/bedrock_client.py     # invoke_claude + tool-use loop
-│       ├── agents/                       # 5 specialists + synthesizer
-│       └── tools/                        # cost_explorer (per-service + forecast), athena_cur (exact bill match), security, sts
+│       ├── agents/                       # 6 specialists + synthesizer
+│       └── tools/                        # cost_explorer (per-service + forecast), athena_cur (exact bill match), security, sts, resource_inventory (RDS/Lambda/ECS/EKS/ECR/S3/ELB)
 ├── frontend/
 │   ├── Dockerfile
 │   ├── nginx.conf

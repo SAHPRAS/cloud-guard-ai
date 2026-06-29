@@ -206,12 +206,16 @@ Watch `CPUCreditBalance` in CloudWatch; switch to m5.large if it drains during s
 Buy a 1-year Savings Plan once settled (~40% off).
 
 ### Bedrock model
-**Default to Claude Sonnet, route the orchestrator to Claude Haiku.**
+**All 7 agents default to Claude Sonnet.** There's no routing/orchestrator layer — each scan
+target calls its agent directly, so there's nothing cheap to route *to* a different model.
+`BEDROCK_MODEL_HAIKU` is still defined in `bedrock_client.py` and available to pass as
+`model=MODELS["HAIKU"]` if you want to move any individual agent to a cheaper model, but none
+currently do.
 
 | Use | Model | Rate (in/out per 1M tok) |
 |-----|-------|--------------------------|
-| Orchestrator (routing) | Claude **Haiku** | ~$1 / $5 |
-| All analysis agents | Claude **Sonnet** | ~$3 / $15 |
+| All 7 agents (default) | Claude **Sonnet** | ~$3 / $15 |
+| Available, currently unused | Claude **Haiku** | ~$1 / $5 |
 | Optional deep reasoning | Claude **Opus** | ~$5 / $25 |
 
 A full scan ≈ $0.12 on Sonnet; your EC2 will cost more than the LLM.

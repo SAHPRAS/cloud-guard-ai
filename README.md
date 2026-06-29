@@ -2,7 +2,10 @@
 
 A 6-agent AWS cost & security console with a radar-style UI, powered by **AWS Bedrock (Claude)**.
 Pick any month — historical months show **actual cost per service + total**; future months show
-**forecasted cost per service + projected total**. Runs on a single EC2 box via Docker Compose.
+an **AI-reasoned forecast per service + projected total**, charted against trailing actuals.
+Every scan ends with a **Synthesizer** pass that reads every other agent's output in one more
+Bedrock call and surfaces cross-cutting insights (e.g. a cost spike that lines up with a security
+finding) as a ranked priority list. Runs on a single EC2 box via Docker Compose.
 
 ```
 EC2 (t3.large, eu-central-1)
@@ -15,12 +18,12 @@ EC2 (t3.large, eu-central-1)
 ## The 6 agents
 | Agent | Role | Model |
 |-------|------|-------|
-| Orchestrator | Routes chat queries to the right agent | Claude Haiku (cheap) |
 | Cost Analyst | Per-service spend + total — CUR (Athena) preferred, Cost Explorer fallback | Claude Sonnet |
 | Anomaly Detector | Flags month-over-month spikes | Claude Sonnet |
 | Rightsizing | Over-provisioned EC2/EKS/DocDB + savings | Claude Sonnet |
-| Forecasting | Per-service forecast + projected total (current/future months only) | Claude Sonnet |
+| Forecasting | Reasons over 24mo trend per service and submits its own structured projection (not just a copied growth-model number) — current/future months only | Claude Sonnet |
 | Security | SecurityHub + GuardDuty findings | Claude Sonnet |
+| Synthesizer | Reads every other agent's output from the same scan and surfaces cross-cutting insights + a ranked priority list | Claude Sonnet |
 
 ---
 
@@ -210,11 +213,23 @@ closed months. The month list itself is built dynamically from `new Date()` (24
 months back, 6 forward), so the app rolls forward automatically — no hardcoded "current
 month" to update by hand.
 
-**Per-service forecast (future month):** `forecastByService` pulls 6 months of
-per-service history, derives EACH service's own growth rate, projects each forward to
-the target month, and sums them → UI shows projected cost per service, a low–high range,
-confidence %, and a PROJECTED TOTAL row (blue = forecast). Also cross-checked against
-the AWS-native `ce:GetCostForecast` ML model.
+**Per-service forecast (future month) is AI-generated:** the backend still computes a
+deterministic compound-growth projection (`forecastByService`) and AWS's native
+`ce:GetCostForecast`, but only as cross-check reference points — the Forecasting agent
+is handed the 24-month trend, each service's growth model, and the AWS ML number, then
+reasons about which services will accelerate/taper and calls a `submit_forecast` tool
+with its own per-service projection, range and confidence. The UI charts the trailing
+actuals against the projected month (with a low–high band) and renders a PROJECTED
+TOTAL row (blue = forecast). If the agent doesn't return a structured forecast (e.g. it
+hits the turn limit), the deterministic growth-model number is used as a fallback so the
+UI never shows nothing.
+
+**Synthesizer (every scan):** once the requested agents finish, their structured outputs
+(not just their text summaries) are handed to one more Bedrock call whose only job is to
+find connections a single-domain agent can't see — e.g. a cost spike that lines up with a
+security finding, or a rightsizing candidate that explains part of a forecasted increase.
+It returns a headline, a short cross-agent narrative, and a ranked priority list shown at
+the top of the results as "Executive analysis."
 
 **Auth (no key management):** the backend holds no AWS keys. The SDK reads temporary
 credentials from the EC2 instance role via IMDS, and AWS rotates them automatically.
@@ -233,9 +248,9 @@ cloud-guard-ai/
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   └── src/
-│       ├── main.py                       # /api/identity /api/scan /api/query (FastAPI)
+│       ├── main.py                       # /api/identity /api/scan (FastAPI)
 │       ├── bedrock/bedrock_client.py     # invoke_claude + tool-use loop
-│       ├── agents/                       # orchestrator + 5 specialists
+│       ├── agents/                       # 5 specialists + synthesizer
 │       └── tools/                        # cost_explorer (per-service + forecast), athena_cur (exact bill match), security, sts
 ├── frontend/
 │   ├── Dockerfile

@@ -60,9 +60,6 @@ export default function RadarConsole() {
   const [feed, setFeed] = useState([]);
   const [agentState, setAgentState] = useState({});
   const [result, setResult] = useState(null);
-  const [chatInput, setChatInput] = useState("");
-  const [chatMessages, setChatMessages] = useState([]);
-  const [chatLoading, setChatLoading] = useState(false);
 
   const month = months[monthIdx];
   const future = month.future;
@@ -185,30 +182,6 @@ export default function RadarConsole() {
 
   const feedIcon = { info: "ti-chevron-right", ok: "ti-circle-check", warn: "ti-alert-triangle", crit: "ti-alert-octagon", fc: "ti-chart-dots", ai: "ti-cpu" };
 
-  async function sendChat() {
-    const q = chatInput.trim();
-    if (!q || chatLoading) return;
-    setChatMessages((m) => [...m, { role: "user", text: q }]);
-    setChatInput("");
-    setChatLoading(true);
-    try {
-      const res = await fetch("/api/query", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: q, month: month.iso, region }),
-      });
-      const data = await res.json();
-      setChatMessages((m) => [
-        ...m,
-        { role: "ai", text: data.summary || data.error || "(no response)", trace: data.trace },
-      ]);
-    } catch (e) {
-      setChatMessages((m) => [...m, { role: "ai", text: `Error: ${e.message}` }]);
-    } finally {
-      setChatLoading(false);
-    }
-  }
-
   return (
     <div className={`console ${future ? "fc-mode" : ""}`}>
       <div className="con-top">
@@ -290,7 +263,9 @@ export default function RadarConsole() {
 
       {result && (
         <div className="results">
+          {renderSynthesis(result.synthesis)}
           {renderCostTable(result)}
+          {result.mode === "forecast" && <ForecastChart forecast={result.blocks?.forecast} />}
           {Object.entries(result.blocks || {}).map(([k, v]) => (
             v.summary ? (
               <div key={k} className="rep-block">
@@ -302,29 +277,87 @@ export default function RadarConsole() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
 
-      <div className="chat-panel">
-        <div className="rep-title"><i className="ti ti-message-circle" /> Ask Cloud Guard AI</div>
-        <div className="chat-messages">
-          {chatMessages.map((m, i) => (
-            <div key={i} className={`chat-msg ${m.role}`}>
-              <div className="chat-msg-text">{m.text}</div>
-              {m.role === "ai" && renderTrace(m.trace)}
-            </div>
+// Cross-agent executive analysis — connects findings across cost/security/rightsizing/forecast.
+function renderSynthesis(synthesis) {
+  if (!synthesis || (!synthesis.headline && !synthesis.narrative)) return null;
+  const impactRank = { high: 0, medium: 1, low: 2 };
+  const priorities = [...(synthesis.priorities || [])].sort(
+    (a, b) => (impactRank[a.impact] ?? 3) - (impactRank[b.impact] ?? 3)
+  );
+  return (
+    <div className="rep-block synthesis-block">
+      <div className="rep-title"><i className="ti ti-sparkles" /> Executive analysis</div>
+      {synthesis.headline && <div className="syn-headline">{synthesis.headline}</div>}
+      {synthesis.narrative && <div className="rep-summary">{synthesis.narrative}</div>}
+      {priorities.length > 0 && (
+        <ol className="syn-priorities">
+          {priorities.map((p, i) => (
+            <li key={i} className={`syn-pri syn-pri-${p.impact}`}>
+              <span className={`syn-impact syn-impact-${p.impact}`}>{p.impact}</span>
+              <span className="syn-cat">{p.category}</span>
+              <div className="syn-pri-body">
+                <div className="syn-pri-title">{p.title}</div>
+                <div className="syn-pri-detail">{p.detail}</div>
+              </div>
+            </li>
           ))}
-          {chatLoading && <div className="chat-msg ai chat-loading">thinking…</div>}
-        </div>
-        <div className="chat-input-row">
-          <input
-            value={chatInput}
-            onChange={(e) => setChatInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && sendChat()}
-            placeholder="e.g. why did my bill go up and is anything insecure?"
-            disabled={chatLoading}
-          />
-          <button onClick={sendChat} disabled={chatLoading}><i className="ti ti-send" /></button>
-        </div>
-      </div>
+        </ol>
+      )}
+    </div>
+  );
+}
+
+// Forecast visualization — trailing actuals as a line, projected month as a banded point.
+function ForecastChart({ forecast }) {
+  if (!forecast || !forecast.trendHistory || forecast.trendHistory.length === 0) return null;
+  const W = 640, H = 170, padL = 50, padR = 70, padT = 16, padB = 24;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+
+  const history = forecast.trendHistory;
+  const points = [...history.map((h) => ({ label: h.month, amount: h.amount })), { label: "proj", amount: forecast.total, projected: true }];
+
+  const maxY = Math.max(forecast.high || 0, ...points.map((p) => p.amount)) * 1.08;
+  const x = (i) => padL + (i / (points.length - 1)) * innerW;
+  const y = (v) => padT + innerH - (v / maxY) * innerH;
+
+  const linePath = points
+    .filter((p) => !p.projected)
+    .map((p, i) => `${i === 0 ? "M" : "L"}${x(i)},${y(p.amount)}`)
+    .join(" ");
+
+  const lastIdx = points.length - 2;
+  const projIdx = points.length - 1;
+  const fmt = (n) => `$${Math.round(n).toLocaleString()}`;
+
+  return (
+    <div className="rep-block">
+      <div className="rep-title"><i className="ti ti-chart-dots" /> Spend trend → AI forecast ({forecast.confidence}% confidence)</div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="forecast-chart">
+        {[0, 0.25, 0.5, 0.75, 1].map((f) => (
+          <line key={f} x1={padL} x2={W - padR} y1={padT + innerH * f} y2={padT + innerH * f} className="fc-grid" />
+        ))}
+        {/* low–high band for the projected month */}
+        <line x1={x(projIdx)} x2={x(projIdx)} y1={y(forecast.low)} y2={y(forecast.high)} className="fc-band" />
+        {/* connector from last actual to projection */}
+        <line x1={x(lastIdx)} y1={y(points[lastIdx].amount)} x2={x(projIdx)} y2={y(forecast.total)} className="fc-connector" />
+        <path d={linePath} className="fc-line" />
+        {points.map((p, i) =>
+          p.projected ? (
+            <circle key={i} cx={x(i)} cy={y(forecast.total)} r="4.5" className="fc-dot-proj" />
+          ) : (
+            <circle key={i} cx={x(i)} cy={y(p.amount)} r="2.5" className="fc-dot" />
+          )
+        )}
+        <text x={x(projIdx)} y={y(forecast.total) - 12} textAnchor="middle" className="fc-label-proj">{fmt(forecast.total)}</text>
+        <text x={x(lastIdx)} y={y(points[lastIdx].amount) - 10} textAnchor="middle" className="fc-label">{fmt(points[lastIdx].amount)}</text>
+        <text x={padL} y={H - 6} className="fc-axis">{history[0]?.month}</text>
+        <text x={W - padR} y={H - 6} textAnchor="end" className="fc-axis">{history[history.length - 1]?.month}</text>
+        <text x={x(projIdx)} y={H - 6} textAnchor="end" className="fc-axis fc-axis-proj">projected</text>
+      </svg>
     </div>
   );
 }
@@ -372,7 +405,7 @@ function renderCostTable(result) {
     if (!f || !f.services) return null;
     rows = f.services.map((s) => ({ name: s.service, amount: s.projected, lo: s.low, hi: s.high }));
     total = f.total;
-    title = `Forecasted cost by service — ${result.month} (${f.confidence}% confidence)`;
+    title = `${f.aiGenerated ? "AI-forecasted" : "Forecasted"} cost by service — ${result.month} (${f.confidence}% confidence)`;
   } else {
     const c = result.blocks?.cost;
     if (!c || !c.data?.services) return null;

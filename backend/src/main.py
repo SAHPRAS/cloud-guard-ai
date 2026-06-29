@@ -10,11 +10,11 @@ from fastapi.responses import JSONResponse
 load_dotenv()  # must run before the agent/tool imports below read os.environ at module load
 
 from .agents.anomaly_detector import run_anomaly_detector
-from .agents.assistant import run_assistant
 from .agents.cost_analyst import run_cost_analyst
 from .agents.forecasting import run_forecasting
 from .agents.rightsizing import run_rightsizing
 from .agents.security import run_security
+from .agents.synthesizer import run_synthesis
 from .tools.athena_cur_tools import get_cur_cost_by_service
 from .tools.cost_explorer_tools import get_cost_by_service, month_to_range
 from .tools.sts_tools import get_caller_identity
@@ -96,6 +96,7 @@ async def scan(request: Request):
         # future months => projection only
         if future:
             result["blocks"]["forecast"] = await run_forecasting(month=month, region=region)
+            result["synthesis"] = await run_synthesis(blocks=result["blocks"], month=month, region=region, mode="forecast")
             return JSONResponse(result)
 
         past = is_past_month(month)
@@ -141,25 +142,11 @@ async def scan(request: Request):
             except Exception:  # noqa: BLE001
                 pass  # comparison is a nice-to-have; don't fail the whole scan over it
 
-        return JSONResponse(result)
-    except Exception as err:  # noqa: BLE001
-        return JSONResponse({"error": str(err)}, status_code=500)
+        try:
+            result["synthesis"] = await run_synthesis(blocks=result["blocks"], month=month, region=region, mode="live")
+        except Exception:  # noqa: BLE001
+            pass  # synthesis is a value-add layer; don't fail the whole scan over it
 
-
-@app.post("/api/query")
-async def query(request: Request):
-    """
-    Chat: one multi-tool agent that can call any cost/security/usage tool itself
-    to answer cross-domain questions, instead of being routed to a single specialist.
-    body: { query, month, region }
-    """
-    body = await request.json() if await request.body() else {}
-    user_query = body.get("query")
-    month = body.get("month", current_month_label())
-    region = body.get("region", "eu-central-1")
-
-    try:
-        result = await run_assistant(query=user_query, month=month, region=region)
         return JSONResponse(result)
     except Exception as err:  # noqa: BLE001
         return JSONResponse({"error": str(err)}, status_code=500)

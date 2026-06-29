@@ -224,6 +224,16 @@ The UI renders a table with bars and a TOTAL row — when CUR data is available,
 shows **Usage Cost / Actual Cost / Discount** per service; otherwise a single Cost
 column.
 
+**Cost figures ignore the region selector — billing is account-wide, not regional.**
+`get_cost_by_service`/`get_monthly_trend`/`get_service_trend`/`get_cost_forecast` in
+`cost_explorer_tools.py` never filter by AWS's `REGION` dimension, even though they accept a
+`region` argument. A region filter there would silently undercount: many services bill as
+global (S3, CloudFront, Route53, Support plans, tax) and don't tag to any region, so filtering
+by `us-east-1` would exclude them from the total instead of giving you "the cost of
+us-east-1" — there's no such concept as a per-region bill, only the account total. The region
+picker still scopes everything that *is* genuinely regional: EC2/EBS/RDS/etc. inventory,
+security groups, rightsizing, CloudWatch metrics.
+
 **Month-over-month comparison:** when scanning the current (in-progress) month, the
 cost block also fetches the previous month's total and attaches a `comparison` object
 (`previousMonth`, `previousTotal`, `delta`, `deltaPct`) — shown as a badge above the

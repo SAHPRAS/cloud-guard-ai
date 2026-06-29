@@ -50,6 +50,21 @@ function currentMonthIso() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
+// Any high/critical severity finding anywhere in the scan — resources, security, anomalies,
+// or the cross-agent synthesis — flips the whole console into red alert mode.
+function hasCriticalFindings(result) {
+  if (!result) return false;
+  const blocks = result.blocks || {};
+  const resources = blocks.resources;
+  if (resources?.resources?.some((r) => r.severity === "high")) return true;
+  if (resources?.findings?.some((f) => f.severity === "high")) return true;
+  if ((blocks.security?.counts?.critical || 0) > 0) return true;
+  if (blocks.security?.findings?.some((f) => f.severity === "crit")) return true;
+  if (blocks.anomaly?.findings?.some((f) => f.severity === "crit")) return true;
+  if (result.synthesis?.priorities?.some((p) => p.impact === "high")) return true;
+  return false;
+}
+
 export default function RadarConsole() {
   const months = buildMonths();
   const presentIdx = months.findIndex((m) => m.iso === currentMonthIso());
@@ -66,9 +81,11 @@ export default function RadarConsole() {
   const month = months[monthIdx];
   const future = month.future;
   const isPast = monthIdx < presentIdx;
+  const critical = hasCriticalFindings(result);
 
   const canvasRef = useRef(null);
   const animRef = useRef({ angle: 0, blips: [], scanning: false });
+  const abortRef = useRef(null);
 
   // forecasting a closed month / inventorying a future month are both meaningless — fall back
   useEffect(() => {
@@ -89,7 +106,7 @@ export default function RadarConsole() {
     let raf;
     const tick = () => {
       const a = animRef.current;
-      const col = future ? "133,183,235" : "61,220,132";
+      const col = critical ? "255,95,86" : future ? "133,183,235" : "61,220,132";
       ctx.clearRect(0, 0, W, H);
       ctx.fillStyle = "#06120e"; ctx.fillRect(0, 0, W, H);
       ctx.strokeStyle = `rgba(${col},0.18)`; ctx.lineWidth = 1;
@@ -107,14 +124,14 @@ export default function RadarConsole() {
         const diff = Math.abs(((a.angle - b.a) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2));
         if (a.scanning && diff < 0.09) b.lit = 1;
         if (b.lit > 0.02) {
-          const c = b.type === "crit" ? "#ff5f56" : b.type === "warn" ? "#ffbd2e" : future ? "#85b7eb" : "#3ddc84";
+          const c = b.type === "crit" || critical ? "#ff5f56" : b.type === "warn" ? "#ffbd2e" : future ? "#85b7eb" : "#3ddc84";
           ctx.globalAlpha = b.lit; ctx.fillStyle = c; ctx.shadowColor = c; ctx.shadowBlur = 10;
           ctx.beginPath(); ctx.arc(bx, by, 3, 0, Math.PI * 2); ctx.fill();
           ctx.shadowBlur = 0; ctx.globalAlpha = b.lit * 0.85; ctx.font = "8px monospace"; ctx.fillStyle = c;
           ctx.fillText(b.label, bx + 6, by + 3); ctx.globalAlpha = 1; b.lit *= 0.974;
         }
       });
-      const cc = future ? "#85b7eb" : "#3ddc84";
+      const cc = critical ? "#ff5f56" : future ? "#85b7eb" : "#3ddc84";
       ctx.fillStyle = cc; ctx.shadowColor = cc; ctx.shadowBlur = 8;
       ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0;
       if (a.scanning) a.angle += 0.024;
@@ -122,7 +139,7 @@ export default function RadarConsole() {
     };
     tick();
     return () => cancelAnimationFrame(raf);
-  }, [future]);
+  }, [future, critical]);
 
   function seedBlips() {
     const services = ["EKS", "EC2", "DocDB", "NAT", "S3", "CW", "IAM", "SG", "GD", "EBS"];
@@ -148,6 +165,9 @@ export default function RadarConsole() {
     animRef.current.scanning = true;
     animRef.current.angle = 0;
 
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     pushFeed("info", `${future ? "Forecast" : target.toUpperCase()} started — ${month.label} · ${region.split(" ·")[0]}`);
     if (identity?.account) pushFeed("info", `Authenticated as ${identity.profile} (${identity.account})`);
     if (future) pushFeed("fc", "Future month — projection mode engaged");
@@ -157,6 +177,7 @@ export default function RadarConsole() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ target, month: month.iso, region }),
+        signal: controller.signal,
       });
       const data = await res.json();
 
@@ -174,19 +195,26 @@ export default function RadarConsole() {
         });
       });
       setResult(data);
+      if (hasCriticalFindings(data)) pushFeed("crit", "Critical findings detected — see highlighted items below");
       pushFeed(future ? "fc" : "ok", future ? "Projection ready" : "Sweep complete");
     } catch (e) {
-      pushFeed("crit", `Scan failed: ${e.message}`);
+      if (e.name === "AbortError") pushFeed("warn", "Scan stopped by user");
+      else pushFeed("crit", `Scan failed: ${e.message}`);
     } finally {
       animRef.current.scanning = false;
+      abortRef.current = null;
       setScanning(false);
     }
+  }
+
+  function stopScan() {
+    abortRef.current?.abort();
   }
 
   const feedIcon = { info: "ti-chevron-right", ok: "ti-circle-check", warn: "ti-alert-triangle", crit: "ti-alert-octagon", fc: "ti-chart-dots", ai: "ti-cpu" };
 
   return (
-    <div className={`console ${future ? "fc-mode" : ""}`}>
+    <div className={`console ${future ? "fc-mode" : ""} ${critical ? "alert-mode" : ""}`}>
       <div className="con-top">
         <span className="con-title">CLOUD_GUARD::RADAR</span>
         <div className="deck">
@@ -208,7 +236,9 @@ export default function RadarConsole() {
         <div className="id-block"><span className="id-l">Profile</span><span className="id-v">{identity?.profile || "—"}</span></div>
         <div className="id-block"><span className="id-l">Account</span><span className="id-v">{identity?.account || "—"}</span></div>
         <div className="id-block"><span className="id-l">Role</span><span className="id-v">{identity?.role || "—"}</span></div>
-        <span className={`id-tag ${future ? "fc" : ""}`}>{future ? "FORECAST" : "LIVE SCAN"}</span>
+        <span className={`id-tag ${critical ? "alert" : future ? "fc" : ""}`}>
+          {critical ? "⚠ CRITICAL FINDINGS" : future ? "FORECAST" : "LIVE SCAN"}
+        </span>
       </div>
 
       <div className="con-body">
@@ -269,6 +299,11 @@ export default function RadarConsole() {
         <button className="scan-go" onClick={runScan} disabled={scanning}>
           <i className="ti ti-radar-2" /> {scanning ? "SCANNING" : "INITIATE"}
         </button>
+        {scanning && (
+          <button className="scan-stop" onClick={stopScan}>
+            <i className="ti ti-player-stop-filled" /> STOP
+          </button>
+        )}
       </div>
 
       {result && (
@@ -368,7 +403,7 @@ function renderResourceBlock(block) {
   });
 
   const rowClass = (r) =>
-    r.severity === "high" ? "res-row-critical" : r.severity === "medium" ? "res-row-flagged" : r.severity === "low" ? "res-row-low" : "";
+    r.severity === "high" ? "res-row-critical" : r.severity === "medium" ? "res-row-flagged" : r.severity === "low" ? "res-row-low" : "res-row-ok";
 
   return (
     <>

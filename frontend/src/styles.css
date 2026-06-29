@@ -14,6 +14,7 @@ body { background: #020806; font-family: "JetBrains Mono", ui-monospace, SFMono-
 .id-v { font-size: 12px; color: #cdeedd; }
 .id-tag { margin-left: auto; font-size: 9px; color: #3ddc84; letter-spacing: 1px; background: #0d2a1f; border: 1px solid #103326; border-radius: 20px; padding: 5px 11px; }
 .id-tag.fc { color: #ffbd2e; border-color: #3a2e0d; background: #2a200d; }
+.id-tag.alert { color: #ff5f56; border-color: #3a1210; background: #2a0d0d; }
 
 .con-body { display: grid; grid-template-columns: 160px 1fr 230px; }
 .scanmenu { border-right: 1px solid #103326; padding: 12px 10px; display: flex; flex-direction: column; gap: 5px; }
@@ -53,6 +54,8 @@ body { background: #020806; font-family: "JetBrains Mono", ui-monospace, SFMono-
 .scan-go { margin-left: auto; background: #0d2a1f; border: 1px solid #3ddc84; color: #3ddc84; font-family: inherit; font-size: 11px; letter-spacing: 1px; padding: 9px 18px; border-radius: 6px; cursor: pointer; display: flex; gap: 6px; align-items: center; }
 .scan-go:hover { background: #3ddc84; color: #06120e; }
 .scan-go:disabled { opacity: 0.5; }
+.scan-stop { margin-left: 8px; background: #260c0b; border: 1px solid #ff5f56; color: #ff5f56; font-family: inherit; font-size: 11px; letter-spacing: 1px; padding: 9px 14px; border-radius: 6px; cursor: pointer; display: flex; gap: 6px; align-items: center; }
+.scan-stop:hover { background: #ff5f56; color: #06120e; }
 
 .results { border-top: 1px solid #103326; padding: 14px; }
 .rep-block { margin-bottom: 16px; }
@@ -121,6 +124,8 @@ body { background: #020806; font-family: "JetBrains Mono", ui-monospace, SFMono-
 .res-row-critical td { background: rgba(255, 95, 86, 0.07); }
 .res-row-critical .ct-name { color: #ffb3ae; }
 .res-row-low td { background: rgba(133, 183, 235, 0.03); }
+.res-row-ok td { background: rgba(61, 220, 132, 0.03); }
+.res-row-ok .ct-name { color: #7de8b4; }
 .res-errors { margin-top: 6px; }
 .res-error-line { font-size: 9.5px; color: #3a5448; }
 
@@ -145,3 +150,20 @@ body { background: #020806; font-family: "JetBrains Mono", ui-monospace, SFMono-
 .fc-label-proj { fill: #aecdf2; font-size: 10px; font-weight: 700; font-family: inherit; }
 .fc-axis { fill: #1f8a5c; font-size: 8px; font-family: inherit; }
 .fc-axis-proj { fill: #85b7eb; }
+
+/* Global alert mode — the whole console flips from green to red when any scan result
+   carries a high/critical severity finding (resources, security, anomalies, synthesis). */
+.alert-mode { border-color: #3a1210; }
+.alert-mode .con-title { color: #ff5f56; }
+.alert-mode .deck select { color: #ff5f56; border-color: #3a1210; }
+.alert-mode .sm-h, .alert-mode .side-h, .alert-mode .id-l, .alert-mode .go-target { color: #b34a42; }
+.alert-mode .sm-item { color: #e89a96; }
+.alert-mode .sm-item:hover { background: #2a0d0d; }
+.alert-mode .sm-item.on { background: #2a0d0d; border-color: #ff5f56; color: #ff5f56; }
+.alert-mode .sm-item.full { color: #ff8c84; }
+.alert-mode .ag-line { color: #e89a96; }
+.alert-mode .ag-bullet.done { background: #ff5f56; box-shadow: 0 0 6px #ff5f56; }
+.alert-mode .scan-go { border-color: #ff5f56; color: #ff5f56; background: #2a0d0d; }
+.alert-mode .scan-go:hover { background: #ff5f56; color: #06120e; }
+.alert-mode .go-target b { color: #ff5f56; }
+.alert-mode .rep-title { color: #ff5f56; }

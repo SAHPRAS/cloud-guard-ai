@@ -18,7 +18,11 @@ different read.
 
 Review every resource in the data you were given — every category and every state,
 not just the flagged ones — and call submit_findings exactly once with concrete,
-specific fixes. Security Groups are the highest priority: any rule flagged
+specific fixes. Every resource in the "Critical (severity high)" list below MUST get
+its own entry in your findings — that list is rendered red in the UI and the user
+needs a fix for every single one, no exceptions, no skipping. Resources with
+medium/low severity or no flag at all are optional commentary — include them only
+where the data genuinely supports a finding. Security Groups are the highest priority: any rule flagged
 high-severity means a sensitive port (SSH/RDP/database ports) or literally all
 ports/protocols are open to 0.0.0.0/0 or ::/0 — name the exact port(s) and exposed
 service from the flag text, and recommend the specific fix (restrict the CIDR to a
@@ -78,6 +82,8 @@ def _digest_resources(resources):
 async def run_resource_inventory(*, region=None):
     inventory = await get_full_inventory(region=region)
     resources = inventory["resources"]
+    critical = [r for r in inventory["flagged"] if r.get("severity") == "high"]
+    other_flagged = [r for r in inventory["flagged"] if r.get("severity") != "high"]
 
     findings = []
     summary_text = ""
@@ -87,7 +93,8 @@ async def run_resource_inventory(*, region=None):
 Resource counts: {json.dumps(inventory["counts"])}.
 Category errors (service likely disabled or missing permission — don't treat as a finding): {json.dumps(inventory["errors"], default=str)}.
 Full inventory: {json.dumps(_digest_resources(resources), default=str)}.
-Heuristically flagged resources (cross-check, not authoritative): {json.dumps(_digest_resources(inventory["flagged"]), default=str)}.
+Critical (severity high — rendered red, MUST all appear in your findings): {json.dumps(_digest_resources(critical), default=str)}.
+Other flagged (medium/low — optional commentary): {json.dumps(_digest_resources(other_flagged), default=str)}.
 
 Review this and call submit_findings with your audit."""
 

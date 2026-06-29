@@ -47,15 +47,11 @@ def month_to_range(month):
     return {"Start": start, "End": nxt}
 
 
-def _region_filter(region):
-    if region and region != "ALL REGIONS":
-        return {"Dimensions": {"Key": "REGION", "Values": [region.split(" ")[0]]}}
-    return None
-
-
 def _get_cost_by_service_sync(month, region):
+    # Billing is account-wide, not regional — a REGION-dimension filter here would
+    # undercount global services (S3, CloudFront, Route53, Support, tax, etc. don't
+    # tag to a region), so `region` is accepted only for cache-key/labeling purposes.
     period = month_to_range(month)
-    filt = _region_filter(region)
 
     kwargs = dict(
         TimePeriod=period,
@@ -63,8 +59,6 @@ def _get_cost_by_service_sync(month, region):
         Metrics=["NetAmortizedCost"],
         GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
     )
-    if filt:
-        kwargs["Filter"] = filt
 
     res = _ce.get_cost_and_usage(**kwargs)
     groups = (res.get("ResultsByTime") or [{}])[0].get("Groups") or []
@@ -82,7 +76,7 @@ def _get_cost_by_service_sync(month, region):
 
 
 async def get_cost_by_service(*, month, region=None):
-    key = f"svc:{month}:{region}"
+    key = f"svc:{month}"  # region doesn't affect the result — see _get_cost_by_service_sync
     cached = _cache_get(key)
     if cached:
         return cached
@@ -103,16 +97,14 @@ def _month_window(months):
 
 
 def _get_monthly_trend_sync(months, region):
+    # See _get_cost_by_service_sync — billing totals are account-wide, not regional.
     start, end = _month_window(months)
-    filt = _region_filter(region)
 
     kwargs = dict(
         TimePeriod={"Start": start.isoformat(), "End": end.isoformat()},
         Granularity="MONTHLY",
         Metrics=["NetAmortizedCost"],
     )
-    if filt:
-        kwargs["Filter"] = filt
 
     res = _ce.get_cost_and_usage(**kwargs)
     return [
@@ -130,8 +122,8 @@ async def get_monthly_trend(*, months=12, region=None):
 
 
 def _get_cost_forecast_sync(month, region):
+    # See _get_cost_by_service_sync — billing totals are account-wide, not regional.
     period = month_to_range(month)
-    filt = _region_filter(region)
 
     kwargs = dict(
         TimePeriod=period,
@@ -139,8 +131,6 @@ def _get_cost_forecast_sync(month, region):
         Metric="NET_AMORTIZED_COST",
         PredictionIntervalLevel=80,
     )
-    if filt:
-        kwargs["Filter"] = filt
 
     res = _ce.get_cost_forecast(**kwargs)
     mean = float(res["Total"]["Amount"])
@@ -166,8 +156,8 @@ async def get_cost_forecast(*, month, region=None):
 
 
 def _get_service_trend_sync(months, region):
+    # See _get_cost_by_service_sync — billing totals are account-wide, not regional.
     start, end = _month_window(months)
-    filt = _region_filter(region)
 
     kwargs = dict(
         TimePeriod={"Start": start.isoformat(), "End": end.isoformat()},
@@ -175,8 +165,6 @@ def _get_service_trend_sync(months, region):
         Metrics=["NetAmortizedCost"],
         GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
     )
-    if filt:
-        kwargs["Filter"] = filt
 
     res = _ce.get_cost_and_usage(**kwargs)
     results = res.get("ResultsByTime") or []
@@ -200,7 +188,7 @@ async def get_service_trend(*, months=6, region=None):
     Returns { "months":[...], "series": { service: [amt per month] } }.
     This is what feeds the per-service forecast.
     """
-    key = f"svctrend:{months}:{region}"
+    key = f"svctrend:{months}"  # region doesn't affect the result — see _get_service_trend_sync
     cached = _cache_get(key)
     if cached:
         return cached

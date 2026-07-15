@@ -19,6 +19,13 @@ EKS_NAMESPACES = {
     "doc-dev-eks-cluster": "doc-dev",
     "rds-rms-dev-eks-cluster": "rds-rms-dev",
 }
+# Matched case-insensitively — EKS cluster names come back from AWS in whatever case
+# they were created with, which doesn't always match how people write them elsewhere.
+_EKS_NAMESPACES_LOWER = {name.lower(): namespace for name, namespace in EKS_NAMESPACES.items()}
+
+
+def _namespace_for_cluster(cluster_name):
+    return _EKS_NAMESPACES_LOWER.get(cluster_name.lower())
 
 
 def _region_code(region):
@@ -563,13 +570,15 @@ def _list_eks_workloads_sync(cluster_name, namespace, region):
         }
 
 
-async def list_eks_workloads(*, region=None):
-    """Nodes + application-namespace pods for the EKS clusters in EKS_NAMESPACES."""
-    names = list(EKS_NAMESPACES.keys())
+async def list_eks_workloads(cluster_names, *, region=None):
+    """Nodes + application-namespace pods for the given (real, case-preserved) EKS cluster
+    names that match EKS_NAMESPACES case-insensitively."""
+    pairs = [(name, _namespace_for_cluster(name)) for name in cluster_names]
+    pairs = [(name, namespace) for name, namespace in pairs if namespace]
     results = await asyncio.gather(
-        *(asyncio.to_thread(_list_eks_workloads_sync, name, EKS_NAMESPACES[name], region) for name in names)
+        *(asyncio.to_thread(_list_eks_workloads_sync, name, namespace, region) for name, namespace in pairs)
     )
-    return dict(zip(names, results))
+    return {name: result for (name, _), result in zip(pairs, results)}
 
 
 # ---------- ECR (incl. image vulnerability scan findings) ----------
@@ -760,11 +769,13 @@ async def get_full_inventory(*, region=None):
     # Attach node/pod workloads to whichever known clusters actually showed up in this
     # account/region — a fresh Kubernetes API call per cluster, so skip it entirely
     # when there's nothing in EKS_NAMESPACES to look up.
-    if isinstance(eks, list) and any(c["name"] in EKS_NAMESPACES for c in eks):
-        workloads = await list_eks_workloads(region=region)
-        for cluster in eks:
-            if cluster["name"] in workloads:
-                cluster["workloads"] = workloads[cluster["name"]]
+    if isinstance(eks, list):
+        matched_names = [c["name"] for c in eks if _namespace_for_cluster(c["name"])]
+        if matched_names:
+            workloads = await list_eks_workloads(matched_names, region=region)
+            for cluster in eks:
+                if cluster["name"] in workloads:
+                    cluster["workloads"] = workloads[cluster["name"]]
 
     resources = []
     errors = {}

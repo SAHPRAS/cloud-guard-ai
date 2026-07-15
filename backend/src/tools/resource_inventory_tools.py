@@ -529,12 +529,19 @@ def _k8s_api_for_cluster(cluster_name, region):
             os.unlink(cafile.name)
 
 
+# (connect, read) seconds — without this the kubernetes client blocks indefinitely on an
+# unreachable cluster (e.g. a private endpoint this backend has no network path to),
+# which stalls the whole scan past nginx's proxy_read_timeout and surfaces as an HTML
+# 504 page instead of JSON on the frontend.
+_K8S_TIMEOUT = (5, 10)
+
+
 def _list_eks_workloads_sync(cluster_name, namespace, region):
     try:
         v1 = _k8s_api_for_cluster(cluster_name, region)
 
         nodes = []
-        for n in v1.list_node().items:
+        for n in v1.list_node(_request_timeout=_K8S_TIMEOUT).items:
             labels = n.metadata.labels or {}
             conditions = {c.type: c.status for c in (n.status.conditions or [])}
             nodes.append(
@@ -547,7 +554,7 @@ def _list_eks_workloads_sync(cluster_name, namespace, region):
             )
 
         pods = []
-        for p in v1.list_namespaced_pod(namespace).items:
+        for p in v1.list_namespaced_pod(namespace, _request_timeout=_K8S_TIMEOUT).items:
             statuses = p.status.container_statuses or []
             ready = sum(1 for s in statuses if s.ready)
             pods.append(

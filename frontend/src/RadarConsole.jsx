@@ -77,6 +77,7 @@ export default function RadarConsole() {
   const [feed, setFeed] = useState([]);
   const [agentState, setAgentState] = useState({});
   const [result, setResult] = useState(null);
+  const [expandedClusters, setExpandedClusters] = useState({});
 
   const month = months[monthIdx];
   const future = month.future;
@@ -211,6 +212,10 @@ export default function RadarConsole() {
     abortRef.current?.abort();
   }
 
+  function toggleCluster(id) {
+    setExpandedClusters((s) => ({ ...s, [id]: !s[id] }));
+  }
+
   const feedIcon = { info: "ti-chevron-right", ok: "ti-circle-check", warn: "ti-alert-triangle", crit: "ti-alert-octagon", fc: "ti-chart-dots", ai: "ti-cpu" };
 
   return (
@@ -311,7 +316,7 @@ export default function RadarConsole() {
           {renderSynthesis(result.synthesis)}
           {renderCostTable(result)}
           {result.mode === "forecast" && <ForecastChart forecast={result.blocks?.forecast} />}
-          {renderResourceBlock(result.blocks?.resources)}
+          {renderResourceBlock(result.blocks?.resources, expandedClusters, toggleCluster)}
           {Object.entries(result.blocks || {}).map(([k, v]) => {
             if (k === "resources") return null; // rendered above via renderResourceBlock
             return v.summary ? (
@@ -389,7 +394,7 @@ function renderAnomalyFindings(block) {
 
 // Resource Auditor: the raw inventory table is factual AWS data; the fixes below it
 // are Claude's judgment call, so the two get separate blocks/headings.
-function renderResourceBlock(block) {
+function renderResourceBlock(block, expandedClusters, toggleCluster) {
   if (!block || (!block.resources?.length && !block.errors)) return null;
   const findingItems = (block.findings || []).map((f) => ({
     impact: f.severity,
@@ -418,13 +423,30 @@ function renderResourceBlock(block) {
               <tr><th>{type.toUpperCase()}</th><th>Status</th><th style={{ textAlign: "right" }}>Flags</th></tr>
             </thead>
             <tbody>
-              {items.map((r) => (
-                <tr key={r.id} className={rowClass(r)}>
-                  <td className="ct-name">{r.name}<div className="res-detail">{r.detail}</div></td>
-                  <td><span className={`res-status res-status-${r.severity || "ok"}`}>{r.status}</span></td>
-                  <td className="ct-amt">{(r.flags || []).join(", ") || "—"}</td>
-                </tr>
-              ))}
+              {items.map((r) => {
+                const expandable = type === "eks" && !!r.workloads;
+                const open = expandable && !!expandedClusters?.[r.id];
+                return (
+                  <React.Fragment key={r.id}>
+                    <tr
+                      className={`${rowClass(r)} ${expandable ? "res-row-expandable" : ""}`}
+                      onClick={expandable ? () => toggleCluster(r.id) : undefined}
+                    >
+                      <td className="ct-name">
+                        {expandable && <i className={`ti ${open ? "ti-chevron-down" : "ti-chevron-right"} res-expand-ic`} />}
+                        {r.name}<div className="res-detail">{r.detail}</div>
+                      </td>
+                      <td><span className={`res-status res-status-${r.severity || "ok"}`}>{r.status}</span></td>
+                      <td className="ct-amt">{(r.flags || []).join(", ") || "—"}</td>
+                    </tr>
+                    {open && (
+                      <tr className="res-workload-row">
+                        <td colSpan={3}>{renderClusterWorkloads(r.workloads)}</td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         ))}
@@ -444,6 +466,48 @@ function renderResourceBlock(block) {
         </div>
       )}
     </>
+  );
+}
+
+// Nodes + application-namespace pods for a single EKS cluster row, expanded in place.
+function renderClusterWorkloads(workloads) {
+  if (workloads.error) {
+    return <div className="res-error-line">{workloads.namespace}: {workloads.hint || workloads.error}</div>;
+  }
+  const nodeRowClass = (n) => (n.status === "Ready" ? "res-row-ok" : "res-row-flagged");
+  const podRowClass = (p) => (p.status === "Running" ? "res-row-ok" : "res-row-flagged");
+  return (
+    <div className="cluster-workloads">
+      <div className="cw-h">Nodes ({workloads.nodes.length})</div>
+      <table className="cost-table res-table cw-table">
+        <thead><tr><th>Node</th><th>Status</th><th>Instance type</th><th>AZ</th></tr></thead>
+        <tbody>
+          {workloads.nodes.map((n) => (
+            <tr key={n.name} className={nodeRowClass(n)}>
+              <td className="ct-name">{n.name}</td>
+              <td><span className={`res-status res-status-${n.status === "Ready" ? "ok" : "medium"}`}>{n.status}</span></td>
+              <td>{n.instanceType}</td>
+              <td>{n.az}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="cw-h">Pods — {workloads.namespace} ({workloads.pods.length})</div>
+      <table className="cost-table res-table cw-table">
+        <thead><tr><th>Pod</th><th>Status</th><th>Ready</th><th>Node</th><th style={{ textAlign: "right" }}>Restarts</th></tr></thead>
+        <tbody>
+          {workloads.pods.map((p) => (
+            <tr key={p.name} className={podRowClass(p)}>
+              <td className="ct-name">{p.name}</td>
+              <td><span className={`res-status res-status-${p.status === "Running" ? "ok" : "medium"}`}>{p.status}</span></td>
+              <td>{p.ready}</td>
+              <td>{p.node}</td>
+              <td className="ct-amt">{p.restarts}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

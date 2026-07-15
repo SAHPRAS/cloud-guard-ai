@@ -1,11 +1,24 @@
 import asyncio
+import base64
 import os
+import re
+import tempfile
+import contextlib
 
 import boto3
+from botocore.signers import RequestSigner
+from kubernetes import client as k8s_client
 
 REGION = os.environ.get("AWS_REGION", "eu-central-1")
 
 _SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL", "UNDEFINED"]
+
+# EKS cluster -> application namespace this console knows how to drill into for
+# node/pod visibility. Add an entry here to surface a new cluster's workloads.
+EKS_NAMESPACES = {
+    "doc-dev-eks-cluster": "doc-dev",
+    "rds-rms-dev-eks-cluster": "rds-rms-dev",
+}
 
 
 def _region_code(region):
@@ -456,6 +469,109 @@ async def list_eks_clusters(*, region=None):
         return {"error": str(e), "hint": "Check eks:ListClusters/DescribeCluster permission"}
 
 
+# ---------- EKS node/pod workloads (nodes + application-namespace pods) ----------
+# Kubernetes API access is a separate permission boundary from AWS IAM: the caller's
+# AWS principal must also be mapped into the cluster's aws-auth ConfigMap (or have an
+# EKS access entry) with at least view access, or every call below fails with 401/403.
+
+def _eks_bearer_token(cluster_name, region_code):
+    # Same token scheme `aws eks get-token` / aws-iam-authenticator use: a presigned
+    # STS GetCallerIdentity URL, base64-encoded, with the cluster name embedded so the
+    # API server can bind the token to this specific cluster.
+    session = boto3.session.Session()
+    sts = session.client("sts", region_name=region_code)
+    signer = RequestSigner(
+        sts.meta.service_model.service_id, region_code, "sts", "v4", session.get_credentials(), session.events
+    )
+    url = signer.generate_presigned_url(
+        {
+            "method": "GET",
+            "url": f"https://sts.{region_code}.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15",
+            "body": {},
+            "headers": {"x-k8s-aws-id": cluster_name},
+            "context": {},
+        },
+        region_name=region_code,
+        expires_in=60,
+        operation_name="",
+    )
+    token = base64.urlsafe_b64encode(url.encode("utf-8")).decode("utf-8")
+    return "k8s-aws-v1." + re.sub(r"=*$", "", token)
+
+
+def _k8s_api_for_cluster(cluster_name, region):
+    region_code = _region_code(region)
+    eks = _client("eks", region)
+    detail = eks.describe_cluster(name=cluster_name)["cluster"]
+
+    cafile = tempfile.NamedTemporaryFile(delete=False, suffix=".crt")
+    try:
+        cafile.write(base64.b64decode(detail["certificateAuthority"]["data"]))
+        cafile.close()
+
+        config = k8s_client.Configuration()
+        config.host = detail["endpoint"]
+        config.ssl_ca_cert = cafile.name
+        config.api_key = {"authorization": _eks_bearer_token(cluster_name, region_code)}
+        config.api_key_prefix = {"authorization": "Bearer"}
+        # ApiClient's urllib3 PoolManager loads the CA file into an SSLContext eagerly
+        # on construction, so the temp file isn't needed past this line.
+        return k8s_client.CoreV1Api(k8s_client.ApiClient(config))
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(cafile.name)
+
+
+def _list_eks_workloads_sync(cluster_name, namespace, region):
+    try:
+        v1 = _k8s_api_for_cluster(cluster_name, region)
+
+        nodes = []
+        for n in v1.list_node().items:
+            labels = n.metadata.labels or {}
+            conditions = {c.type: c.status for c in (n.status.conditions or [])}
+            nodes.append(
+                {
+                    "name": n.metadata.name,
+                    "status": "Ready" if conditions.get("Ready") == "True" else "NotReady",
+                    "instanceType": labels.get("node.kubernetes.io/instance-type", "—"),
+                    "az": labels.get("topology.kubernetes.io/zone", "—"),
+                }
+            )
+
+        pods = []
+        for p in v1.list_namespaced_pod(namespace).items:
+            statuses = p.status.container_statuses or []
+            ready = sum(1 for s in statuses if s.ready)
+            pods.append(
+                {
+                    "name": p.metadata.name,
+                    "status": p.status.phase,
+                    "node": p.spec.node_name,
+                    "ready": f"{ready}/{len(statuses)}",
+                    "restarts": sum(s.restart_count for s in statuses),
+                }
+            )
+
+        return {"namespace": namespace, "nodes": nodes, "pods": pods}
+    except Exception as e:  # noqa: BLE001
+        return {
+            "namespace": namespace,
+            "error": str(e),
+            "hint": f"Check that this backend's AWS principal has a Kubernetes access entry (or aws-auth ConfigMap "
+            f"entry) with view access on {cluster_name}",
+        }
+
+
+async def list_eks_workloads(*, region=None):
+    """Nodes + application-namespace pods for the EKS clusters in EKS_NAMESPACES."""
+    names = list(EKS_NAMESPACES.keys())
+    results = await asyncio.gather(
+        *(asyncio.to_thread(_list_eks_workloads_sync, name, EKS_NAMESPACES[name], region) for name in names)
+    )
+    return dict(zip(names, results))
+
+
 # ---------- ECR (incl. image vulnerability scan findings) ----------
 
 def _list_ecr_sync(region):
@@ -640,6 +756,15 @@ async def get_full_inventory(*, region=None):
         "elasticache": elasticache, "cloudfront": cloudfront, "sns": sns, "sqs": sqs,
         "rds": rds, "lambda": lambdas, "ecs": ecs, "eks": eks, "ecr": ecr, "s3": s3, "elb": elb,
     }
+
+    # Attach node/pod workloads to whichever known clusters actually showed up in this
+    # account/region — a fresh Kubernetes API call per cluster, so skip it entirely
+    # when there's nothing in EKS_NAMESPACES to look up.
+    if isinstance(eks, list) and any(c["name"] in EKS_NAMESPACES for c in eks):
+        workloads = await list_eks_workloads(region=region)
+        for cluster in eks:
+            if cluster["name"] in workloads:
+                cluster["workloads"] = workloads[cluster["name"]]
 
     resources = []
     errors = {}

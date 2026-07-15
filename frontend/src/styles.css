@@ -173,6 +173,15 @@ body { background: var(--bg-body); font-family: "JetBrains Mono", ui-monospace, 
 .res-errors { margin-top: 6px; }
 .res-error-line { font-size: 9.5px; color: var(--muted); }
 
+.res-row-expandable { cursor: pointer; }
+.res-row-expandable:hover td { background: rgba(0, 212, 255, 0.07); }
+.res-expand-ic { font-size: 10px; color: var(--accent-dim); margin-right: 4px; vertical-align: -1px; }
+.res-workload-row td { background: var(--bg-panel) !important; padding: 10px 8px 14px 24px; }
+.cluster-workloads { display: flex; flex-direction: column; gap: 4px; }
+.cw-h { font-size: 8px; color: var(--accent-dim); letter-spacing: 1.5px; text-transform: uppercase; margin: 6px 0 4px; }
+.cw-table { margin-bottom: 4px; }
+.cw-table th, .cw-table td { padding: 5px 8px; font-size: 10.5px; }
+
 .res-status { font-size: 9.5px; padding: 2px 7px; border-radius: 10px; letter-spacing: 0.5px; white-space: nowrap; }
 .res-status-ok { background: rgba(0, 212, 255, 0.1); color: var(--accent-mid); }
 .res-status-low { background: rgba(63, 127, 163, 0.18); color: var(--info-text); }

@@ -424,7 +424,7 @@ function renderResourceBlock(block, expandedClusters, toggleCluster) {
             </thead>
             <tbody>
               {items.map((r) => {
-                const expandable = type === "eks" && !!r.workloads;
+                const expandable = (type === "eks" && !!r.workloads) || (type === "rds" && !!r.docCollection);
                 const open = expandable && !!expandedClusters?.[r.id];
                 return (
                   <React.Fragment key={r.id}>
@@ -441,7 +441,7 @@ function renderResourceBlock(block, expandedClusters, toggleCluster) {
                     </tr>
                     {open && (
                       <tr className="res-workload-row">
-                        <td colSpan={3}>{renderClusterWorkloads(r.workloads)}</td>
+                        <td colSpan={3}>{r.workloads ? renderClusterWorkloads(r.workloads) : renderDocCollection(r.docCollection)}</td>
                       </tr>
                     )}
                   </React.Fragment>
@@ -512,6 +512,27 @@ function renderClusterWorkloads(workloads) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// Capped document sample from a DocumentDB collection, for a single RDS row expanded in place.
+function renderDocCollection(docCollection) {
+  if (docCollection.error) {
+    return (
+      <div className="res-error-line">
+        {docCollection.database}.{docCollection.collection}: {docCollection.error}
+        {docCollection.hint && <div>{docCollection.hint}</div>}
+      </div>
+    );
+  }
+  return (
+    <div className="cluster-workloads">
+      <div className="cw-h">
+        {docCollection.database}.{docCollection.collection}
+        <span className="cw-count">({docCollection.count} documents · showing {docCollection.documents.length})</span>
+      </div>
+      <pre className="doc-json">{JSON.stringify(docCollection.documents, null, 2)}</pre>
     </div>
   );
 }

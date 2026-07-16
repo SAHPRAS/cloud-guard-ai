@@ -4,10 +4,15 @@ import os
 import re
 import tempfile
 import contextlib
+import urllib.request
+from datetime import datetime
 
 import boto3
 from botocore.signers import RequestSigner
 from kubernetes import client as k8s_client
+from bson import ObjectId
+from bson.decimal128 import Decimal128
+from pymongo import MongoClient
 
 REGION = os.environ.get("AWS_REGION", "eu-central-1")
 
@@ -26,6 +31,18 @@ _EKS_NAMESPACES_LOWER = {name.lower(): namespace for name, namespace in EKS_NAME
 
 def _namespace_for_cluster(cluster_name):
     return _EKS_NAMESPACES_LOWER.get(cluster_name.lower())
+
+
+# RDS/DocumentDB instance -> the single collection this console knows how to sample
+# documents from. Matched case-insensitively, same reasoning as EKS_NAMESPACES above.
+DOCDB_COLLECTIONS = {
+    "rds-rms-dev-db-cluster-instane-1": {"database": "consentdb", "collection": "consent"},
+}
+_DOCDB_COLLECTIONS_LOWER = {name.lower(): target for name, target in DOCDB_COLLECTIONS.items()}
+
+
+def _docdb_target_for_instance(instance_id):
+    return _DOCDB_COLLECTIONS_LOWER.get(instance_id.lower())
 
 
 def _region_code(region):
@@ -376,6 +393,87 @@ async def list_rds_instances(*, region=None):
         return await asyncio.to_thread(_list_rds_sync, region)
     except Exception as e:  # noqa: BLE001
         return {"error": str(e), "hint": "Check rds:DescribeDBInstances permission for this region"}
+
+
+# ---------- DocumentDB collection sample (for the RDS instances in DOCDB_COLLECTIONS) ----------
+# DocumentDB has no IAM-token auth like RDS/Aurora — login is username/password only, read
+# from DOCDB_URI (never hardcoded; set it in an untracked .env, see .env.example).
+
+_DOCDB_CA_BUNDLE_URL = "https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem"
+_DOCDB_CA_BUNDLE_PATH = os.path.join(tempfile.gettempdir(), "rds-global-bundle.pem")
+_DOCDB_TIMEOUT_MS = 8000
+_DOCDB_SAMPLE_LIMIT = 20
+
+
+def _docdb_ca_bundle():
+    # AWS's public CA bundle for RDS/DocumentDB TLS — same file for every cluster/region,
+    # so it's downloaded once and reused for the life of the process.
+    if not os.path.exists(_DOCDB_CA_BUNDLE_PATH):
+        urllib.request.urlretrieve(_DOCDB_CA_BUNDLE_URL, _DOCDB_CA_BUNDLE_PATH)
+    return _DOCDB_CA_BUNDLE_PATH
+
+
+def _jsonify_bson(value):
+    # Mongo documents carry BSON types (ObjectId, datetime, Decimal128) that aren't
+    # natively JSON-serializable — convert them to plain strings recursively.
+    if isinstance(value, ObjectId):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Decimal128):
+        return str(value.to_decimal())
+    if isinstance(value, dict):
+        return {k: _jsonify_bson(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_jsonify_bson(v) for v in value]
+    return value
+
+
+def _fetch_doc_collection_sync(database, collection):
+    uri = os.environ.get("DOCDB_URI")
+    if not uri:
+        return {
+            "database": database,
+            "collection": collection,
+            "error": "DOCDB_URI is not set",
+            "hint": "Set DOCDB_URI in this backend's .env (never commit the real value) — see .env.example",
+        }
+
+    client = None
+    try:
+        client = MongoClient(
+            uri,
+            tls=True,
+            tlsCAFile=_docdb_ca_bundle(),
+            retryWrites=False,
+            serverSelectionTimeoutMS=_DOCDB_TIMEOUT_MS,
+            connectTimeoutMS=_DOCDB_TIMEOUT_MS,
+        )
+        coll = client[database][collection]
+        count = coll.estimated_document_count()
+        documents = [_jsonify_bson(doc) for doc in coll.find().limit(_DOCDB_SAMPLE_LIMIT)]
+        return {"database": database, "collection": collection, "count": count, "documents": documents}
+    except Exception as e:  # noqa: BLE001
+        return {
+            "database": database,
+            "collection": collection,
+            "error": str(e),
+            "hint": f"Check DOCDB_URI's credentials, and that this backend has network access "
+            f"(VPC route / security group) to reach {database}.{collection}",
+        }
+    finally:
+        if client is not None:
+            client.close()
+
+
+async def list_docdb_collections(instances):
+    """Document sample (capped at 20) for whichever RDS instances match DOCDB_COLLECTIONS."""
+    pairs = [(name, _docdb_target_for_instance(name)) for name in instances]
+    pairs = [(name, target) for name, target in pairs if target]
+    results = await asyncio.gather(
+        *(asyncio.to_thread(_fetch_doc_collection_sync, target["database"], target["collection"]) for _, target in pairs)
+    )
+    return {name: result for (name, _), result in zip(pairs, results)}
 
 
 # ---------- Lambda ----------
@@ -778,6 +876,16 @@ async def get_full_inventory(*, region=None):
             for cluster in eks:
                 if cluster["name"] in workloads:
                     cluster["workloads"] = workloads[cluster["name"]]
+
+    # Same idea for RDS instances in DOCDB_COLLECTIONS — a capped document sample
+    # pulled straight from the DocumentDB collection, not just AWS-side metadata.
+    if isinstance(rds, list):
+        matched_instances = [db["name"] for db in rds if _docdb_target_for_instance(db["name"])]
+        if matched_instances:
+            collections = await list_docdb_collections(matched_instances)
+            for db in rds:
+                if db["name"] in collections:
+                    db["docCollection"] = collections[db["name"]]
 
     resources = []
     errors = {}

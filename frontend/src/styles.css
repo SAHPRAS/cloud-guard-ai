@@ -179,8 +179,21 @@ body { background: var(--bg-body); font-family: "JetBrains Mono", ui-monospace, 
 .res-workload-row td { background: var(--bg-panel) !important; padding: 10px 8px 14px 24px; }
 .cluster-workloads { display: flex; flex-direction: column; gap: 4px; }
 .cw-h { font-size: 8px; color: var(--accent-dim); letter-spacing: 1.5px; text-transform: uppercase; margin: 6px 0 4px; }
+.cw-count { text-transform: none; letter-spacing: 0; color: var(--accent-mid); margin-left: 6px; }
 .cw-table { margin-bottom: 4px; }
 .cw-table th, .cw-table td { padding: 5px 8px; font-size: 10.5px; }
+.doc-json {
+  max-height: 360px;
+  overflow: auto;
+  background: var(--bg-console);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--accent-pale);
+  white-space: pre;
+}
 
 .res-status { font-size: 9.5px; padding: 2px 7px; border-radius: 10px; letter-spacing: 0.5px; white-space: nowrap; }
 .res-status-ok { background: rgba(0, 212, 255, 0.1); color: var(--accent-mid); }

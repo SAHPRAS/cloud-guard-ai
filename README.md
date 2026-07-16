@@ -31,6 +31,16 @@ EC2 (t3.large, eu-central-1)
 
 Plain-language summary of everything added on top of the original MVP, newest first:
 
+- **DocumentDB collection drill-down (new) — expand an RDS row to see a sample of its
+  actual documents.** The `rds-rms-dev-db-cluster-instane-1` row in Resource Inventory is now
+  clickable: expanding it shows the first 20 documents (plus a total count) from its
+  `consentdb.consent` collection, fetched live via a direct DocumentDB connection
+  (`pymongo`, TLS, AWS's public CA bundle — downloaded once and cached). Credentials come from
+  `DOCDB_URI`, an environment variable only (never hardcoded, never committed — see
+  `.env.example`), since DocumentDB has no IAM-token login like RDS/Aurora. **Note:** this app
+  has no authentication of its own and is reachable on the open internet, so this shows real
+  application data (not just infra metadata) to anyone who can reach the console — treat that
+  as a deliberate, accepted risk for this dev environment, not an oversight.
 - **Backend container now ships the AWS CLI, and the host's kubeconfig is mounted in (read-only).**
   `backend/Dockerfile` installs `awscli` v2, and `docker-compose.yml` mounts
   `/home/ec2-user/.kube` into the container at `/root/.kube:ro`. This is infra scaffolding for

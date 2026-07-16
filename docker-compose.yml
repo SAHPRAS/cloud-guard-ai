@@ -16,6 +16,8 @@ services:
       - ATHENA_DATABASE=${ATHENA_DATABASE:-cur_db}
       - ATHENA_TABLE=${ATHENA_TABLE:-aws_cur}
       - ATHENA_OUTPUT_S3=${ATHENA_OUTPUT_S3:-s3://cloud-guard-ai/athena-results/}
+      # consentdb collection drill-down — set the real value in your own untracked .env
+      - DOCDB_URI=${DOCDB_URI:-}
     # No AWS keys here — the EC2 instance role provides credentials via IMDS.
     expose:
       - "3001"

@@ -36,7 +36,7 @@ def _namespace_for_cluster(cluster_name):
 # RDS/DocumentDB instance -> the single collection this console knows how to sample
 # documents from. Matched case-insensitively, same reasoning as EKS_NAMESPACES above.
 DOCDB_COLLECTIONS = {
-    "rds-rms-dev-db-cluster-instane-1": {"database": "consentdb", "collection": "consent"},
+    "rds-rms-dev-db-cluster-instance-1": {"database": "consentdb", "collection": "consent"},
 }
 _DOCDB_COLLECTIONS_LOWER = {name.lower(): target for name, target in DOCDB_COLLECTIONS.items()}
 
@@ -451,7 +451,7 @@ def _fetch_doc_collection_sync(database, collection):
         )
         coll = client[database][collection]
         count = coll.estimated_document_count()
-        documents = [_jsonify_bson(doc) for doc in coll.find().limit(_DOCDB_SAMPLE_LIMIT)]
+        documents = [_jsonify_bson(doc) for doc in coll.find()]
         return {"database": database, "collection": collection, "count": count, "documents": documents}
     except Exception as e:  # noqa: BLE001
         return {

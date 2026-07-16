@@ -31,6 +31,24 @@ EC2 (t3.large, eu-central-1)
 
 Plain-language summary of everything added on top of the original MVP, newest first:
 
+- **Backend container now ships the AWS CLI, and the host's kubeconfig is mounted in (read-only).**
+  `backend/Dockerfile` installs `awscli` v2, and `docker-compose.yml` mounts
+  `/home/ec2-user/.kube` into the container at `/root/.kube:ro`. This is infra scaffolding for
+  manual `kubectl` debugging on the box — the app's own Kubernetes calls (see the workloads
+  feature below) build their connection entirely in Python from a fresh signed token, so they
+  don't read or depend on this mounted kubeconfig at all.
+- **EKS node/pod drill-down (new) — expand a cluster row to see what's actually running.**
+  The Resource Inventory table's EKS rows are now clickable for the two clusters this console
+  knows about (`doc-dev-eks-cluster` → `doc-dev` namespace, `rds-rms-dev-eks-cluster` →
+  `rds-rms-dev` namespace, matched case-insensitively against whatever AWS returns).
+  Expanding shows that cluster's nodes (status, instance type, AZ) and the pods running in its
+  mapped namespace (status, ready count, node, restarts), fetched live from the Kubernetes API
+  using a token signed from the backend's own AWS credentials — no kubeconfig or extra secrets
+  needed. Requires the backend's AWS principal to have Kubernetes access on the cluster (an EKS
+  access entry or `aws-auth` ConfigMap entry with at least view permissions) — until that's
+  granted, expanding a row shows a clear inline error instead of silently failing. Kubernetes
+  calls carry an explicit 5s connect / 10s read timeout, so an unreachable cluster fails fast
+  instead of stalling the whole scan past nginx's proxy timeout.
 - **Stop button.** A scan can now be cancelled mid-flight instead of having to wait it out.
 - **Cost numbers no longer change when you switch region.** Billing is account-wide in AWS —
   there's no such thing as "the bill for us-east-1" — so the Cost/Anomaly/Forecast numbers now
@@ -417,7 +435,8 @@ disabled service doesn't blank the rest:
   any other internet-open rule is `medium`
 - **Data:** RDS (flags publicly-accessible → `high`), DynamoDB, ElastiCache
 - **Containers:** ECS (flags desired≠running task count → `medium`), EKS (flags public API
-  endpoint → `high`)
+  endpoint → `high`; for `doc-dev-eks-cluster` and `rds-rms-dev-eks-cluster`, the row expands
+  in the UI to show live nodes + application-namespace pods — see the changelog above)
 - **Images:** ECR repos, with the latest pushed image's vulnerability scan severity counts
   (`high` if any CRITICAL/HIGH CVE, `low` if only lesser ones)
 - **Storage/edge/messaging:** S3 (flags public-access-block → `high` / missing default
@@ -477,7 +496,7 @@ cloud-guard-ai/
 │       ├── main.py                       # /api/identity /api/scan (FastAPI)
 │       ├── bedrock/bedrock_client.py     # invoke_claude + tool-use loop
 │       ├── agents/                       # 6 specialists + synthesizer
-│       └── tools/                        # cost_explorer (per-service + forecast), athena_cur (exact bill match), security, sts, resource_inventory (17 categories — see the agents table above), ec2, cloudwatch
+│       └── tools/                        # cost_explorer (per-service + forecast), athena_cur (exact bill match), security, sts, resource_inventory (17 categories + EKS node/pod workloads via the `kubernetes` client — see the agents table above), ec2, cloudwatch
 ├── frontend/
 │   ├── Dockerfile
 │   ├── nginx.conf

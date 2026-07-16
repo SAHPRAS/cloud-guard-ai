@@ -472,7 +472,12 @@ function renderResourceBlock(block, expandedClusters, toggleCluster) {
 // Nodes + application-namespace pods for a single EKS cluster row, expanded in place.
 function renderClusterWorkloads(workloads) {
   if (workloads.error) {
-    return <div className="res-error-line">{workloads.namespace}: {workloads.hint || workloads.error}</div>;
+    return (
+      <div className="res-error-line">
+        {workloads.namespace}: {workloads.error}
+        {workloads.hint && <div>{workloads.hint}</div>}
+      </div>
+    );
   }
   const nodeRowClass = (n) => (n.status === "Ready" ? "res-row-ok" : "res-row-flagged");
   const podRowClass = (p) => (p.status === "Running" ? "res-row-ok" : "res-row-flagged");

@@ -512,21 +512,16 @@ def _k8s_api_for_cluster(cluster_name, region):
     detail = eks.describe_cluster(name=cluster_name)["cluster"]
 
     cafile = tempfile.NamedTemporaryFile(delete=False, suffix=".crt")
-    try:
-        cafile.write(base64.b64decode(detail["certificateAuthority"]["data"]))
-        cafile.close()
+    cafile.write(base64.b64decode(detail["certificateAuthority"]["data"]))
+    cafile.close()
 
-        config = k8s_client.Configuration()
-        config.host = detail["endpoint"]
-        config.ssl_ca_cert = cafile.name
-        config.api_key = {"authorization": _eks_bearer_token(cluster_name, region_code)}
-        config.api_key_prefix = {"authorization": "Bearer"}
-        # ApiClient's urllib3 PoolManager loads the CA file into an SSLContext eagerly
-        # on construction, so the temp file isn't needed past this line.
-        return k8s_client.CoreV1Api(k8s_client.ApiClient(config))
-    finally:
-        with contextlib.suppress(OSError):
-            os.unlink(cafile.name)
+    config = k8s_client.Configuration()
+    config.host = detail["endpoint"]
+    config.ssl_ca_cert = cafile.name
+    config.api_key = {"authorization": _eks_bearer_token(cluster_name, region_code)}
+    config.api_key_prefix = {"authorization": "Bearer"}
+
+    return k8s_client.CoreV1Api(k8s_client.ApiClient(config))
 
 
 # (connect, read) seconds — without this the kubernetes client blocks indefinitely on an

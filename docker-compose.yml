@@ -3,6 +3,8 @@ services:
     build: ./backend
     container_name: cgai-backend
     restart: unless-stopped
+    volumes:
+      - /home/ec2-user/.kube:/root/.kube:ro
     environment:
       - AWS_REGION=${AWS_REGION:-eu-central-1}
       - PROFILE_LABEL=${PROFILE_LABEL:-DT_DTRD_DEV}

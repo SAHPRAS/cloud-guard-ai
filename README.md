@@ -31,9 +31,9 @@ EC2 (t3.large, eu-central-1)
 
 Plain-language summary of everything added on top of the original MVP, newest first:
 
-- **DocumentDB collection drill-down (new) — expand an RDS row to see a sample of its
-  actual documents.** The `rds-rms-dev-db-cluster-instane-1` row in Resource Inventory is now
-  clickable: expanding it shows the first 20 documents (plus a total count) from its
+- **DocumentDB collection drill-down (new) — expand an RDS row to see its actual
+  documents.** The `rds-rms-dev-db-cluster-instance-1` row in Resource Inventory is now
+  clickable: expanding it shows every document (plus a total count) from its
   `consentdb.consent` collection, fetched live via a direct DocumentDB connection
   (`pymongo`, TLS, AWS's public CA bundle — downloaded once and cached). Credentials come from
   `DOCDB_URI`, an environment variable only (never hardcoded, never committed — see
